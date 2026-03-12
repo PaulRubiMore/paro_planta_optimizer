@@ -1,38 +1,18 @@
 # =============================================================================
 # OPTIMIZADOR DE PARADAS DE PLANTA
 # Streamlit + OR-Tools
-#
-# Este sistema permite:
-# 1. Cargar órdenes de trabajo exportadas desde SAP
-# 2. Optimizar el cronograma de ejecución
-# 3. Respetar capacidades de técnicos
-# 4. Minimizar el tiempo total de parada
-# 5. Visualizar el resultado en un diagrama de Gantt
-#
-# Tecnologías:
-# - Streamlit (interfaz web)
-# - OR-Tools CP-SAT (optimización)
-# - Plotly (visualización)
 # =============================================================================
-
-# -----------------------------------------------------------------------------
-# IMPORTACIÓN DE LIBRERÍAS
-# -----------------------------------------------------------------------------
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
-
-# librería para gráficos interactivos
 import plotly.express as px
 
-# optimizador de Google
 from ortools.sat.python import cp_model
 
 
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN GENERAL DE LA APLICACIÓN
+# CONFIGURACIÓN STREAMLIT
 # -----------------------------------------------------------------------------
 
 st.set_page_config(
@@ -42,66 +22,92 @@ st.set_page_config(
 )
 
 st.title("🏭 Optimización de Paradas de Planta")
-st.write("Modelo de optimización usando OR-Tools")
 
 
 # -----------------------------------------------------------------------------
-# PANEL LATERAL - CARGA DE DATOS
+# CARGA DE ARCHIVOS
 # -----------------------------------------------------------------------------
 
-st.sidebar.header("Cargar datos")
+st.sidebar.header("Cargar archivos Excel")
 
-archivo = st.sidebar.file_uploader(
-    "Subir archivo Excel exportado desde SAP",
+archivo1 = st.sidebar.file_uploader(
+    "Archivo planificación",
+    type=["xlsx"]
+)
+
+archivo2 = st.sidebar.file_uploader(
+    "Archivo órdenes",
     type=["xlsx"]
 )
 
 
 # -----------------------------------------------------------------------------
-# FUNCIÓN PARA LEER EL EXCEL
+# LIMPIAR COLUMNAS
 # -----------------------------------------------------------------------------
 
-def cargar_datos(file):
+def limpiar_columnas(df):
 
-    # leer archivo Excel
-    df = pd.read_excel(file)
-
-    # limpiar nombres de columnas
-    df.columns = df.columns.str.strip()
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.replace("\n", " ")
+        .str.replace("  ", " ")
+    )
 
     return df
 
 
 # -----------------------------------------------------------------------------
-# FUNCIÓN DE OPTIMIZACIÓN (OR-TOOLS)
+# CARGAR Y PREPARAR DATOS
+# -----------------------------------------------------------------------------
+
+def cargar_datos(file1, file2):
+
+    df1 = pd.read_excel(file1)
+    df2 = pd.read_excel(file2)
+
+    df1 = limpiar_columnas(df1)
+    df2 = limpiar_columnas(df2)
+
+    # unir archivos
+    df = pd.concat([df1, df2], ignore_index=True)
+
+    # filtrar ejecutor
+    df = df[
+        df["EJECUTOR"].str.upper().isin(
+            ["MASSY ENERGY", "MASSY ENERGY GEN"]
+        )
+    ]
+
+    # renombrar columnas para el modelo
+    df = df.rename(columns={
+        "Actividades": "actividad",
+        "TIEMPO (Hrs)": "duracion_h",
+        "ESPECIALIDAD": "especialidad",
+        "CRITICIDAD": "criticidad"
+    })
+
+    # eliminar filas sin duración
+    df = df[df["duracion_h"].notna()]
+
+    df["duracion_h"] = df["duracion_h"].astype(int)
+
+    df = df.reset_index(drop=True)
+
+    return df
+
+
+# -----------------------------------------------------------------------------
+# OPTIMIZADOR ORTOOLS
 # -----------------------------------------------------------------------------
 
 def optimizar_cronograma(df, horizonte=36):
 
-    """
-    Esta función crea un modelo matemático de programación de actividades.
-
-    Objetivo:
-    minimizar el tiempo total de parada.
-
-    Restricciones:
-    - capacidad de técnicos
-    - duración de actividades
-    """
-
-    # crear modelo de optimización
     model = cp_model.CpModel()
 
-    # lista de tareas
     tareas = df.index.tolist()
 
-    # duración de cada tarea
-    duraciones = df["duracion_h"].astype(int).tolist()
-
-    # -------------------------------------------------------------------------
-    # VARIABLES DE DECISIÓN
-    # -------------------------------------------------------------------------
-    # el solver decide en qué hora inicia cada actividad
+    duraciones = df["duracion_h"].tolist()
 
     inicio = {}
     fin = {}
@@ -109,21 +115,10 @@ def optimizar_cronograma(df, horizonte=36):
 
     for i in tareas:
 
-        # hora de inicio
-        inicio[i] = model.NewIntVar(
-            0,
-            horizonte,
-            f"inicio_{i}"
-        )
+        inicio[i] = model.NewIntVar(0, horizonte, f"inicio_{i}")
 
-        # hora de fin
-        fin[i] = model.NewIntVar(
-            0,
-            horizonte,
-            f"fin_{i}"
-        )
+        fin[i] = model.NewIntVar(0, horizonte, f"fin_{i}")
 
-        # intervalo de ejecución
         intervalos[i] = model.NewIntervalVar(
             inicio[i],
             duraciones[i],
@@ -132,9 +127,9 @@ def optimizar_cronograma(df, horizonte=36):
         )
 
 
-    # -------------------------------------------------------------------------
-    # CAPACIDAD DE RECURSOS (TÉCNICOS DISPONIBLES)
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------
+    # CAPACIDAD DE TÉCNICOS
+    # ------------------------------------------------------------
 
     CAPACIDAD = {
         "MECANICA": 8,
@@ -146,24 +141,19 @@ def optimizar_cronograma(df, horizonte=36):
 
     for esp in especialidades:
 
-        # seleccionar tareas de esa especialidad
         tareas_esp = [
             i for i in tareas
             if df.loc[i, "especialidad"] == esp
         ]
 
-        # intervalos correspondientes
         intervalos_esp = [
             intervalos[i] for i in tareas_esp
         ]
 
-        # cada tarea usa 1 técnico
         demandas = [1] * len(intervalos_esp)
 
-        # capacidad máxima
         cap = CAPACIDAD.get(esp, 4)
 
-        # restricción cumulative
         model.AddCumulative(
             intervalos_esp,
             demandas,
@@ -171,16 +161,11 @@ def optimizar_cronograma(df, horizonte=36):
         )
 
 
-    # -------------------------------------------------------------------------
-    # FUNCIÓN OBJETIVO
-    # -------------------------------------------------------------------------
-    # minimizar duración total de la parada
+    # ------------------------------------------------------------
+    # OBJETIVO: minimizar duración total
+    # ------------------------------------------------------------
 
-    makespan = model.NewIntVar(
-        0,
-        horizonte,
-        "makespan"
-    )
+    makespan = model.NewIntVar(0, horizonte, "makespan")
 
     model.AddMaxEquality(
         makespan,
@@ -190,21 +175,15 @@ def optimizar_cronograma(df, horizonte=36):
     model.Minimize(makespan)
 
 
-    # -------------------------------------------------------------------------
-    # EJECUTAR SOLVER
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------
+    # SOLVER
+    # ------------------------------------------------------------
 
     solver = cp_model.CpSolver()
 
-    # tiempo máximo de búsqueda
     solver.parameters.max_time_in_seconds = 10
 
     status = solver.Solve(model)
-
-
-    # -------------------------------------------------------------------------
-    # EXTRAER RESULTADOS
-    # -------------------------------------------------------------------------
 
     resultados = []
 
@@ -212,7 +191,6 @@ def optimizar_cronograma(df, horizonte=36):
 
         for i in tareas:
 
-            # valores encontrados por el solver
             s = solver.Value(inicio[i])
             f = solver.Value(fin[i])
 
@@ -230,28 +208,27 @@ def optimizar_cronograma(df, horizonte=36):
 # EJECUCIÓN DE LA APP
 # -----------------------------------------------------------------------------
 
-if archivo:
+if archivo1 and archivo2:
 
-    # leer datos
-    df = cargar_datos(archivo)
+    df = cargar_datos(archivo1, archivo2)
 
-    st.subheader("Datos cargados")
+    st.subheader("📊 Datos filtrados (Massy Energy)")
 
     st.dataframe(df)
 
-    # botón para ejecutar optimización
-    if st.button("Optimizar cronograma"):
+
+    if st.button("🚀 Optimizar cronograma"):
 
         resultado = optimizar_cronograma(df)
 
-        st.subheader("Cronograma optimizado")
+        st.subheader("📅 Cronograma optimizado")
 
         st.dataframe(resultado)
 
 
-        # ---------------------------------------------------------------------
-        # CREAR FECHAS REALES
-        # ---------------------------------------------------------------------
+        # ---------------------------------------------------------
+        # CONVERTIR HORAS A FECHA REAL
+        # ---------------------------------------------------------
 
         inicio_parada = datetime(2026, 3, 18, 6, 0)
 
@@ -264,9 +241,9 @@ if archivo:
         )
 
 
-        # ---------------------------------------------------------------------
-        # GRAFICO DE GANTT
-        # ---------------------------------------------------------------------
+        # ---------------------------------------------------------
+        # DIAGRAMA DE GANTT
+        # ---------------------------------------------------------
 
         fig = px.timeline(
             resultado,
@@ -279,7 +256,8 @@ if archivo:
 
         fig.update_yaxes(autorange="reversed")
 
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
+        st.plotly_chart(fig, use_container_width=True)
+
+else:
+
+    st.info("⬅️ Carga ambos archivos Excel para iniciar.")
