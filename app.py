@@ -137,15 +137,13 @@ def optimizar_actividades(df_actividades, horas_paro):
                     "end": solver.Value(e_)
                 })
 
-    df_result=pd.DataFrame(resultados)
+    df_result = pd.DataFrame(resultados)
 
-    if not df_result.empty:
-        # Contar técnicos necesarios por centro/especialidad
-        df_result["tecnico_id"]=df_result.groupby(["centro","especialidad","fragmento"]).ngroup()+1
+    # Si está vacío, crear columnas para que la app no rompa
+    if df_result.empty:
+        df_result = pd.DataFrame(columns=list(df_actividades.columns) + ["fragmento","start","end","tecnico_id"])
     else:
-        df_result["tecnico_id"] = []
-
-    return df_result
+        df_result["tecnico_id"] = df_result.groupby(["centro","especialidad","fragmento"]).ngroup()+1
 
 # -----------------------------------------------------------------------------
 # CRONOGRAMA POR HORAS
@@ -175,10 +173,13 @@ if archivo1 and archivo2:
         st.subheader("Optimizando actividades...")
         resultado=optimizar_actividades(df_actividades,horas_paro)
 
-        resultado["inicio_real"]=resultado["start"].apply(lambda x: inicio_parada+timedelta(hours=x))
-        resultado["fin_real"]=resultado["end"].apply(lambda x: inicio_parada+timedelta(hours=x))
-        st.subheader("Cronograma optimizado")
-        st.dataframe(resultado)
+        if not resultado.empty:
+            resultado["inicio_real"] = resultado["start"].apply(lambda x: inicio_parada + timedelta(hours=x))
+            resultado["fin_real"] = resultado["end"].apply(lambda x: inicio_parada + timedelta(hours=x))
+            st.subheader("Cronograma optimizado")
+            st.dataframe(resultado)
+        else:
+            st.warning("No se pudo generar un cronograma. Revisa los datos o la duración del paro.")
 
         cronograma_horas=generar_cronograma_horas(resultado,horas_paro)
         st.subheader("Cronograma por técnico y hora")
