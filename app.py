@@ -87,14 +87,13 @@ def descomponer_ordenes(df):
 # OPTIMIZACIÓN
 # -----------------------------------------------------------------------------
 def optimizar_actividades(df_actividades, horas_paro):
+    from math import ceil
     dias_paro = ceil(horas_paro/24)
     capacidad_por_tecnico = dias_paro*8
 
     model = cp_model.CpModel()
     horizon = horas_paro
-    tareas=[]
     intervalos={}
-    asignaciones={}
     resultados=[]
     
     # Crear intervalos "fragmentables" por técnico según capacidad
@@ -107,20 +106,20 @@ def optimizar_actividades(df_actividades, horas_paro):
             s=model.NewIntVar(0,horizon,f"s_{idx}_{f}")
             e=model.NewIntVar(0,horizon,f"e_{idx}_{f}")
             interv=model.NewIntervalVar(s,fdur,e,f"int_{idx}_{f}")
-            intervalos[idx].append((s,e,interv))
+            intervalos[idx].append((s,e,interv,f+1))  # <-- f+1 será fragmento
     
     # Restricción: No overlap por centro/especialidad
     grupos=df_actividades.groupby(["centro","especialidad"]).groups
     for (c,e), idxs in grupos.items():
         tech_intervals=[]
         for idx in idxs:
-            for s,e_,i in intervalos[idx]:
+            for s,e_,i,frag in intervalos[idx]:
                 tech_intervals.append(i)
         model.AddNoOverlap(tech_intervals)
 
     # Objetivo: minimizar makespan
     makespan=model.NewIntVar(0,horizon,"makespan")
-    all_ends=[e_ for idxs in intervalos.values() for s,e_,i in idxs]
+    all_ends=[e_ for idxs in intervalos.values() for s,e_,i,frag in idxs]
     model.AddMaxEquality(makespan,all_ends)
     model.Minimize(makespan)
 
@@ -130,19 +129,22 @@ def optimizar_actividades(df_actividades, horas_paro):
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         for idx,row in df_actividades.iterrows():
-            for f,s_e_i in enumerate(intervalos[idx]):
-                s,e_,i=s_e_i
+            for s,e_,i,frag in intervalos[idx]:
                 resultados.append({
                     **row,
-                    "fragmento":f+1,
-                    "start":solver.Value(s),
-                    "end":solver.Value(e_)
+                    "fragmento": frag,
+                    "start": solver.Value(s),
+                    "end": solver.Value(e_)
                 })
 
     df_result=pd.DataFrame(resultados)
 
-    # Contar técnicos necesarios por centro/especialidad
-    df_result["tecnico_id"]=df_result.groupby(["centro","especialidad","fragmento"]).ngroup()+1
+    if not df_result.empty:
+        # Contar técnicos necesarios por centro/especialidad
+        df_result["tecnico_id"]=df_result.groupby(["centro","especialidad","fragmento"]).ngroup()+1
+    else:
+        df_result["tecnico_id"] = []
+
     return df_result
 
 # -----------------------------------------------------------------------------
