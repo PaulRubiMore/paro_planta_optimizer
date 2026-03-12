@@ -1,5 +1,5 @@
 # =============================================================================
-# OPTIMIZADOR DE PARADAS DE PLANTA
+# OPTIMIZADOR DE ACTIVIDADES - PARADA DE BOMBEO
 # Streamlit + OR-Tools
 # =============================================================================
 
@@ -7,98 +7,118 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
-
 from ortools.sat.python import cp_model
 
 
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN STREAMLIT
+# CONFIGURACIÓN DE LA APP
 # -----------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Optimizador Parada de Planta",
+    page_title="Optimizador Parada Bombeo",
     page_icon="🏭",
     layout="wide"
 )
 
-st.title("🏭 Optimización de Paradas de Planta")
+st.title("🏭 Optimización de Parada de Bombeo")
 
 
 # -----------------------------------------------------------------------------
-# CARGA DE ARCHIVOS
+# SIDEBAR - CARGA DE ARCHIVOS
 # -----------------------------------------------------------------------------
 
-st.sidebar.header("Cargar archivos Excel")
+st.sidebar.header("Cargar archivos")
 
 archivo1 = st.sidebar.file_uploader(
-    "Archivo planificación",
+    "Archivo 1 - Paro de bombeo",
     type=["xlsx"]
 )
 
 archivo2 = st.sidebar.file_uploader(
-    "Archivo órdenes",
+    "Archivo 2 - Lista de actividades",
     type=["xlsx"]
 )
 
 
 # -----------------------------------------------------------------------------
-# LIMPIAR COLUMNAS
+# FUNCIÓN PARA CARGAR Y LIMPIAR DATOS
 # -----------------------------------------------------------------------------
 
-def limpiar_columnas(df):
+def cargar_datos(archivo1, archivo2):
 
-    df.columns = (
-        df.columns
-        .str.strip()
-        .str.replace("\n", " ")
-        .str.replace("  ", " ")
-    )
+    df1 = pd.read_excel(archivo1)
+    df2 = pd.read_excel(archivo2)
 
-    return df
+    # limpiar nombres
+    df1.columns = df1.columns.str.strip()
+    df2.columns = df2.columns.str.strip()
 
+    # -------------------------------------------------------------
+    # FILTRAR MASSY ENERGY
+    # -------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# CARGAR Y PREPARAR DATOS
-# -----------------------------------------------------------------------------
-
-def cargar_datos(file1, file2):
-
-    df1 = pd.read_excel(file1)
-    df2 = pd.read_excel(file2)
-
-    df1 = limpiar_columnas(df1)
-    df2 = limpiar_columnas(df2)
-
-    # unir archivos
-    df = pd.concat([df1, df2], ignore_index=True)
-
-    # filtrar ejecutor
-    df = df[
-        df["EJECUTOR"].str.upper().isin(
-            ["MASSY ENERGY", "MASSY ENERGY GEN"]
+    df1 = df1[
+        df1["EJECUTOR"].str.contains(
+            "massy energy",
+            case=False,
+            na=False
         )
     ]
 
-    # renombrar columnas para el modelo
-    df = df.rename(columns={
-        "Actividades": "actividad",
-        "TIEMPO (Hrs)": "duracion_h",
-        "ESPECIALIDAD": "especialidad",
-        "CRITICIDAD": "criticidad"
-    })
+    # -------------------------------------------------------------
+    # COLUMNAS NECESARIAS
+    # -------------------------------------------------------------
 
-    # eliminar filas sin duración
-    df = df[df["duracion_h"].notna()]
+    df1 = df1[
+        [
+            "Centro planificación",
+            "Actividades",
+            "Orden",
+            "TIEMPO (Hrs)",
+            "ESTADO",
+            "ESPECIALIDAD",
+            "EJECUTOR",
+            "CRITICIDAD"
+        ]
+    ]
 
-    df["duracion_h"] = df["duracion_h"].astype(int)
+    df2 = df2[
+        [
+            "Actividades",
+            "Zona",
+            "Sector"
+        ]
+    ]
 
-    df = df.reset_index(drop=True)
+    # -------------------------------------------------------------
+    # MERGE DE LOS DOS ARCHIVOS
+    # -------------------------------------------------------------
+
+    df = df1.merge(
+        df2,
+        on="Actividades",
+        how="left"
+    )
+
+    # renombrar columnas
+    df = df.rename(
+        columns={
+            "TIEMPO (Hrs)": "duracion_h",
+            "Actividades": "actividad",
+            "Orden": "orden",
+            "ESPECIALIDAD": "especialidad",
+            "CRITICIDAD": "criticidad"
+        }
+    )
+
+    # convertir duración
+    df["duracion_h"] = df["duracion_h"].fillna(1).astype(int)
 
     return df
 
 
 # -----------------------------------------------------------------------------
-# OPTIMIZADOR ORTOOLS
+# FUNCIÓN DE OPTIMIZACIÓN
 # -----------------------------------------------------------------------------
 
 def optimizar_cronograma(df, horizonte=36):
@@ -106,7 +126,6 @@ def optimizar_cronograma(df, horizonte=36):
     model = cp_model.CpModel()
 
     tareas = df.index.tolist()
-
     duraciones = df["duracion_h"].tolist()
 
     inicio = {}
@@ -126,10 +145,9 @@ def optimizar_cronograma(df, horizonte=36):
             f"intervalo_{i}"
         )
 
-
-    # ------------------------------------------------------------
+    # -------------------------------------------------------------
     # CAPACIDAD DE TÉCNICOS
-    # ------------------------------------------------------------
+    # -------------------------------------------------------------
 
     CAPACIDAD = {
         "MECANICA": 8,
@@ -160,10 +178,9 @@ def optimizar_cronograma(df, horizonte=36):
             cap
         )
 
-
-    # ------------------------------------------------------------
-    # OBJETIVO: minimizar duración total
-    # ------------------------------------------------------------
+    # -------------------------------------------------------------
+    # FUNCIÓN OBJETIVO
+    # -------------------------------------------------------------
 
     makespan = model.NewIntVar(0, horizonte, "makespan")
 
@@ -174,10 +191,9 @@ def optimizar_cronograma(df, horizonte=36):
 
     model.Minimize(makespan)
 
-
-    # ------------------------------------------------------------
+    # -------------------------------------------------------------
     # SOLVER
-    # ------------------------------------------------------------
+    # -------------------------------------------------------------
 
     solver = cp_model.CpSolver()
 
@@ -205,17 +221,16 @@ def optimizar_cronograma(df, horizonte=36):
 
 
 # -----------------------------------------------------------------------------
-# EJECUCIÓN DE LA APP
+# EJECUCIÓN PRINCIPAL
 # -----------------------------------------------------------------------------
 
 if archivo1 and archivo2:
 
     df = cargar_datos(archivo1, archivo2)
 
-    st.subheader("📊 Datos filtrados (Massy Energy)")
+    st.subheader("📊 Datos filtrados Massy Energy")
 
     st.dataframe(df)
-
 
     if st.button("🚀 Optimizar cronograma"):
 
@@ -225,9 +240,8 @@ if archivo1 and archivo2:
 
         st.dataframe(resultado)
 
-
         # ---------------------------------------------------------
-        # CONVERTIR HORAS A FECHA REAL
+        # FECHAS REALES
         # ---------------------------------------------------------
 
         inicio_parada = datetime(2026, 3, 18, 6, 0)
@@ -240,7 +254,6 @@ if archivo1 and archivo2:
             lambda x: inicio_parada + timedelta(hours=x)
         )
 
-
         # ---------------------------------------------------------
         # DIAGRAMA DE GANTT
         # ---------------------------------------------------------
@@ -251,13 +264,16 @@ if archivo1 and archivo2:
             x_end="fin_real",
             y="actividad",
             color="especialidad",
-            title="Cronograma de Parada de Planta"
+            title="Cronograma de Actividades"
         )
 
         fig.update_yaxes(autorange="reversed")
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
 else:
 
-    st.info("⬅️ Carga ambos archivos Excel para iniciar.")
+    st.info("👈 Carga los dos archivos Excel para iniciar.")
