@@ -145,6 +145,9 @@ def optimizar_actividades(df_actividades, horas_paro):
     else:
         df_result["tecnico_id"] = df_result.groupby(["centro","especialidad","fragmento"]).ngroup()+1
 
+    # 🔹 RETORNAR SIEMPRE EL DATAFRAME
+    return df_result
+
 # -----------------------------------------------------------------------------
 # CRONOGRAMA POR HORAS
 # -----------------------------------------------------------------------------
