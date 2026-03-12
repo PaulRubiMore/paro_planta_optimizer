@@ -160,36 +160,44 @@ def generar_cronograma_horas(df_result,horas_paro):
             if h<horas_paro: cronograma.loc[t,h]=row["actividad"]
     return cronograma.fillna("")
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # EJECUCIÓN APP
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------
 if archivo1 and archivo2:
-    df=cargar_datos(archivo1,archivo2)
+    df = cargar_datos(archivo1, archivo2)
     st.subheader("Datos filtrados Massy Energy")
     st.dataframe(df)
     
     if st.button("Generar Cronograma"):
-        df_actividades=descomponer_ordenes(df)
+        df_actividades = descomponer_ordenes(df)
         st.subheader("Actividades descompuestas por especialidad")
         st.dataframe(df_actividades)
         
         st.subheader("Optimizando actividades...")
-        resultado=optimizar_actividades(df_actividades,horas_paro)
+        resultado = optimizar_actividades(df_actividades, horas_paro)
 
         if not resultado.empty:
+            # Convertir a fechas reales
             resultado["inicio_real"] = resultado["start"].apply(lambda x: inicio_parada + timedelta(hours=x))
             resultado["fin_real"] = resultado["end"].apply(lambda x: inicio_parada + timedelta(hours=x))
             st.subheader("Cronograma optimizado")
             st.dataframe(resultado)
+
+            # Cronograma por horas
+            cronograma_horas = generar_cronograma_horas(resultado, horas_paro)
+            st.subheader("Cronograma por técnico y hora")
+            st.dataframe(cronograma_horas)
+
+            # Gráfico Gantt
+            fig = px.timeline(
+                resultado,
+                x_start="inicio_real",
+                x_end="fin_real",
+                y="tecnico_id",
+                color="especialidad",
+                title="Cronograma de Parada"
+            )
+            fig.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("No se pudo generar un cronograma. Revisa los datos o la duración del paro.")
-
-        cronograma_horas=generar_cronograma_horas(resultado,horas_paro)
-        st.subheader("Cronograma por técnico y hora")
-        st.dataframe(cronograma_horas)
-
-        fig=px.timeline(resultado,x_start="inicio_real",x_end="fin_real",y="tecnico_id",color="especialidad",title="Cronograma de Parada")
-        fig.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig,use_container_width=True)
-else:
-    st.info("Cargar los dos archivos Excel para iniciar.")
