@@ -46,12 +46,27 @@ archivo2 = st.sidebar.file_uploader(
 
 def cargar_datos(archivo1, archivo2):
 
+    # leer archivos
     df1 = pd.read_excel(archivo1)
     df2 = pd.read_excel(archivo2)
 
-    # limpiar nombres
-    df1.columns = df1.columns.str.strip()
-    df2.columns = df2.columns.str.strip()
+    # -------------------------------------------------------------
+    # LIMPIAR NOMBRES DE COLUMNAS
+    # -------------------------------------------------------------
+
+    df1.columns = (
+        df1.columns
+        .str.strip()
+        .str.replace("\n", " ", regex=True)
+        .str.replace("  ", " ")
+    )
+
+    df2.columns = (
+        df2.columns
+        .str.strip()
+        .str.replace("\n", " ", regex=True)
+        .str.replace("  ", " ")
+    )
 
     # -------------------------------------------------------------
     # FILTRAR MASSY ENERGY
@@ -59,28 +74,33 @@ def cargar_datos(archivo1, archivo2):
 
     df1 = df1[
         df1["EJECUTOR"].str.contains(
-            "massy energy",
+            "massy",
             case=False,
             na=False
         )
     ]
 
     # -------------------------------------------------------------
-    # COLUMNAS NECESARIAS
+    # SELECCIONAR COLUMNAS
     # -------------------------------------------------------------
 
-    df1 = df1[
-        [
-            "Centro planificación",
-            "Actividades",
-            "Orden",
-            "TIEMPO (Hrs)",
-            "ESTADO",
-            "ESPECIALIDAD",
-            "EJECUTOR",
-            "CRITICIDAD"
-        ]
+    columnas_df1 = [
+        "Centro planificación",
+        "Actividades",
+        "Orden",
+        "TIEMPO (Hrs)",
+        "ESTADO",
+        "ESPECIALIDAD",
+        "EJECUTOR",
+        "CRITICIDAD"
     ]
+
+    # si TIEMPO (Hrs) no existe buscamos columna similar
+    for col in df1.columns:
+        if "TIEMPO" in col.upper():
+            df1 = df1.rename(columns={col: "TIEMPO (Hrs)"})
+
+    df1 = df1[columnas_df1]
 
     df2 = df2[
         [
@@ -91,7 +111,7 @@ def cargar_datos(archivo1, archivo2):
     ]
 
     # -------------------------------------------------------------
-    # MERGE DE LOS DOS ARCHIVOS
+    # MERGE
     # -------------------------------------------------------------
 
     df = df1.merge(
@@ -111,11 +131,9 @@ def cargar_datos(archivo1, archivo2):
         }
     )
 
-    # convertir duración
     df["duracion_h"] = df["duracion_h"].fillna(1).astype(int)
 
     return df
-
 
 # -----------------------------------------------------------------------------
 # FUNCIÓN DE OPTIMIZACIÓN
