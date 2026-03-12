@@ -1,7 +1,63 @@
+# =============================================================================
+# OPTIMIZADOR DE PARADA DE PLANTA
+# Streamlit + OR-Tools
+# =============================================================================
+
 import streamlit as st
 import pandas as pd
-import math
+from datetime import datetime, timedelta
+import plotly.express as px
 from ortools.sat.python import cp_model
+
+
+# -----------------------------------------------------------------------------
+# CONFIGURACIÓN APP
+# -----------------------------------------------------------------------------
+
+st.set_page_config(
+    page_title="Optimizador Parada Planta",
+    page_icon="🏭",
+    layout="wide"
+)
+
+st.title("🏭 Optimización de Parada de Planta")
+
+
+# -----------------------------------------------------------------------------
+# SIDEBAR
+# -----------------------------------------------------------------------------
+
+st.sidebar.header("Configuración del Paro")
+
+horas_paro = st.sidebar.number_input(
+    "Duración del paro (horas)",
+    min_value=1,
+    max_value=500,
+    value=36
+)
+
+fecha_inicio = st.sidebar.date_input(
+    "Fecha inicio del paro"
+)
+
+hora_inicio = st.sidebar.time_input(
+    "Hora inicio del paro"
+)
+
+inicio_parada = datetime.combine(fecha_inicio, hora_inicio)
+
+
+st.sidebar.header("Cargar archivos Excel")
+
+archivo1 = st.sidebar.file_uploader(
+    "Archivo 1 - Paro de bombeo",
+    type=["xlsx"]
+)
+
+archivo2 = st.sidebar.file_uploader(
+    "Archivo 2 - Lista de actividades",
+    type=["xlsx"]
+)
 
 
 # -----------------------------------------------------------------------------
@@ -37,7 +93,7 @@ def cargar_datos(archivo1, archivo2):
         if "TIEMPO" in col.upper():
             df1 = df1.rename(columns={col: "TIEMPO (Hrs)"})
 
-    # filtrar ejecutor massy
+    # filtrar massy
     df1 = df1[
         df1["EJECUTOR"].str.contains(
             "massy",
@@ -67,20 +123,22 @@ def cargar_datos(archivo1, archivo2):
         ]
     ]
 
+    # eliminar duplicados
     df1 = df1.drop_duplicates(subset=["Orden"])
     df2 = df2.drop_duplicates(subset=["Actividades"])
 
+    # merge
     df = df1.merge(
         df2,
         on="Actividades",
         how="left"
     )
 
+    # renombrar
     df = df.rename(
         columns={
             "Orden": "orden",
             "Actividades": "actividad",
-            "Centro planificación": "centro",
             "TIEMPO (Hrs)": "duracion_h",
             "ESPECIALIDAD": "especialidad",
             "CRITICIDAD": "criticidad"
@@ -93,156 +151,138 @@ def cargar_datos(archivo1, archivo2):
 
 
 # -----------------------------------------------------------------------------
-# CREAR TECNICOS
-# -----------------------------------------------------------------------------
-
-def crear_tecnicos(centros):
-
-    tecnicos = []
-
-    especialidades = [
-        "MECANICA",
-        "ELECTRICA",
-        "INSTRUMENTACION"
-    ]
-
-    for c in centros:
-
-        for e in especialidades:
-
-            for i in range(1,6):
-
-                tecnicos.append({
-
-                    "tecnico":f"{c}_{e}_T{i}",
-                    "centro":c,
-                    "especialidad":e
-                })
-
-    return pd.DataFrame(tecnicos)
-
-
-# -----------------------------------------------------------------------------
 # OPTIMIZADOR
 # -----------------------------------------------------------------------------
 
-def optimizar(df, tecnicos, duracion_paro):
+def optimizar_cronograma(df, horizonte):
 
     model = cp_model.CpModel()
 
-    horas = range(duracion_paro)
+    tareas = df.index.tolist()
+    duraciones = df["duracion_h"].tolist()
 
-    x = {}
+    inicio = {}
+    fin = {}
+    intervalos = {}
 
-    for t in tecnicos.index:
-        for a in df.index:
-        for h in horas:
+    for i in tareas:
 
-                if (
-                    tecnicos.loc[t,"centro"] == df.loc[a,"centro"]
-                    and
-                    tecnicos.loc[t,"especialidad"] == df.loc[a,"especialidad"]
-                ):
+        inicio[i] = model.NewIntVar(0, horizonte, f"inicio_{i}")
+        fin[i] = model.NewIntVar(0, horizonte, f"fin_{i}")
 
-                    x[t,a,h] = model.NewBoolVar(f"x_{t}_{a}_{h}")
-
-    # tecnico una actividad por hora
-    for t in tecnicos.index:
-        for h in horas:
-
-            model.Add(
-
-                sum(
-                    x[t,a,h]
-                    for a in df.index
-                    if (t,a,h) in x
-                ) <= 1
-
-            )
-
-    # cumplir duración
-    for a in df.index:
-
-        model.Add(
-
-            sum(
-                x[t,a,h]
-                for t in tecnicos.index
-                for h in horas
-                if (t,a,h) in x
-            ) == df.loc[a,"duracion_h"]
-
+        intervalos[i] = model.NewIntervalVar(
+            inicio[i],
+            duraciones[i],
+            fin[i],
+            f"intervalo_{i}"
         )
 
-    solver = cp_model.CpSolver()
+    # capacidad técnicos
+    CAPACIDAD = {
+        "MECANICA": 8,
+        "ELECTRICA": 6,
+        "INSTRUMENTACION": 5
+    }
 
-    solver.parameters.max_time_in_seconds = 10
+    especialidades = df["especialidad"].unique()
 
-    solver.Solve(model)
+    for esp in especialidades:
 
-    cronograma = pd.DataFrame(
-        "",
-        index=tecnicos["tecnico"],
-        columns=horas
+        tareas_esp = [
+            i for i in tareas
+            if df.loc[i, "especialidad"] == esp
+        ]
+
+        intervalos_esp = [intervalos[i] for i in tareas_esp]
+
+        demandas = [1] * len(intervalos_esp)
+
+        cap = CAPACIDAD.get(esp, 4)
+
+        model.AddCumulative(
+            intervalos_esp,
+            demandas,
+            cap
+        )
+
+    # objetivo minimizar duración total
+    makespan = model.NewIntVar(0, horizonte, "makespan")
+
+    model.AddMaxEquality(
+        makespan,
+        [fin[i] for i in tareas]
     )
 
-    for (t,a,h) in x:
+    model.Minimize(makespan)
 
-        if solver.Value(x[t,a,h]) == 1:
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 10
 
-            tecnico = tecnicos.loc[t,"tecnico"]
-            orden = df.loc[a,"orden"]
+    status = solver.Solve(model)
 
-            cronograma.loc[tecnico,h] = orden
+    resultados = []
 
-    return cronograma
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+
+        for i in tareas:
+
+            s = solver.Value(inicio[i])
+            f = solver.Value(fin[i])
+
+            fila = df.loc[i].to_dict()
+
+            fila["start"] = s
+            fila["end"] = f
+
+            resultados.append(fila)
+
+    return pd.DataFrame(resultados)
 
 
 # -----------------------------------------------------------------------------
-# STREAMLIT
+# EJECUCIÓN
 # -----------------------------------------------------------------------------
-
-st.title("Optimizador de Parada de Planta")
-
-duracion_paro = st.sidebar.number_input(
-    "Duración del paro (horas)",
-    1,
-    120,
-    36
-)
-
-archivo1 = st.sidebar.file_uploader(
-    "Excel órdenes SAP",
-    type=["xlsx"]
-)
-
-archivo2 = st.sidebar.file_uploader(
-    "Excel zonas",
-    type=["xlsx"]
-)
 
 if archivo1 and archivo2:
 
     df = cargar_datos(archivo1, archivo2)
 
-    st.subheader("Datos cargados")
+    st.subheader("Datos filtrados Massy Energy")
 
     st.dataframe(df)
 
-    centros = df["centro"].unique()
-
-    tecnicos = crear_tecnicos(centros)
+    st.write("Ordenes únicas:", df["orden"].nunique())
 
     if st.button("Optimizar cronograma"):
 
-        cronograma = optimizar(df, tecnicos, duracion_paro)
+        resultado = optimizar_cronograma(df, horas_paro)
 
-        st.subheader("Cronograma técnico × hora")
+        st.subheader("Cronograma optimizado")
 
-        st.dataframe(cronograma)
-
-        st.download_button(
-            "Descargar cronograma",
-            cronograma.to_csv(),
-            "cronograma.csv"
+        resultado["inicio_real"] = resultado["start"].apply(
+            lambda x: inicio_parada + timedelta(hours=x)
         )
+
+        resultado["fin_real"] = resultado["end"].apply(
+            lambda x: inicio_parada + timedelta(hours=x)
+        )
+
+        st.dataframe(resultado)
+
+        # GANTT
+        fig = px.timeline(
+            resultado,
+            x_start="inicio_real",
+            x_end="fin_real",
+            y="actividad",
+            color="especialidad",
+            title="Cronograma de Parada"
+        )
+
+        fig.update_yaxes(autorange="reversed")
+
+        st.plotly_chart(fig, use_container_width=True)
+
+else:
+
+    st.info("Cargar los dos archivos Excel para iniciar.")
