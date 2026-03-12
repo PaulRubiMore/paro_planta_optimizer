@@ -27,6 +27,26 @@ st.title("🏭 Optimización de Parada de Planta")
 # SIDEBAR
 # -----------------------------------------------------------------------------
 
+st.sidebar.header("Configuración del Paro")
+
+horas_paro = st.sidebar.number_input(
+    "Duración del paro (horas)",
+    min_value=1,
+    max_value=500,
+    value=36
+)
+
+fecha_inicio = st.sidebar.date_input(
+    "Fecha inicio del paro"
+)
+
+hora_inicio = st.sidebar.time_input(
+    "Hora inicio del paro"
+)
+
+inicio_parada = datetime.combine(fecha_inicio, hora_inicio)
+
+
 st.sidebar.header("Cargar archivos Excel")
 
 archivo1 = st.sidebar.file_uploader(
@@ -41,7 +61,7 @@ archivo2 = st.sidebar.file_uploader(
 
 
 # -----------------------------------------------------------------------------
-# FUNCIÓN LIMPIEZA COLUMNAS
+# LIMPIAR COLUMNAS
 # -----------------------------------------------------------------------------
 
 def limpiar_columnas(df):
@@ -57,7 +77,7 @@ def limpiar_columnas(df):
 
 
 # -----------------------------------------------------------------------------
-# CARGA DE DATOS
+# CARGAR DATOS
 # -----------------------------------------------------------------------------
 
 def cargar_datos(archivo1, archivo2):
@@ -68,18 +88,12 @@ def cargar_datos(archivo1, archivo2):
     df1 = limpiar_columnas(df1)
     df2 = limpiar_columnas(df2)
 
-    # -------------------------------------------------------------
-    # DETECTAR COLUMNA TIEMPO AUTOMÁTICAMENTE
-    # -------------------------------------------------------------
-
+    # detectar columna tiempo
     for col in df1.columns:
         if "TIEMPO" in col.upper():
             df1 = df1.rename(columns={col: "TIEMPO (Hrs)"})
 
-    # -------------------------------------------------------------
-    # FILTRAR MASSY ENERGY
-    # -------------------------------------------------------------
-
+    # filtrar massy
     df1 = df1[
         df1["EJECUTOR"].str.contains(
             "massy",
@@ -87,10 +101,6 @@ def cargar_datos(archivo1, archivo2):
             na=False
         )
     ]
-
-    # -------------------------------------------------------------
-    # SELECCIÓN COLUMNAS
-    # -------------------------------------------------------------
 
     df1 = df1[
         [
@@ -113,27 +123,18 @@ def cargar_datos(archivo1, archivo2):
         ]
     ]
 
-    # -------------------------------------------------------------
-    # ELIMINAR DUPLICADOS
-    # -------------------------------------------------------------
-
+    # eliminar duplicados
     df1 = df1.drop_duplicates(subset=["Orden"])
     df2 = df2.drop_duplicates(subset=["Actividades"])
 
-    # -------------------------------------------------------------
-    # MERGE
-    # -------------------------------------------------------------
-
+    # merge
     df = df1.merge(
         df2,
         on="Actividades",
         how="left"
     )
 
-    # -------------------------------------------------------------
-    # RENOMBRAR COLUMNAS
-    # -------------------------------------------------------------
-
+    # renombrar
     df = df.rename(
         columns={
             "Orden": "orden",
@@ -150,10 +151,10 @@ def cargar_datos(archivo1, archivo2):
 
 
 # -----------------------------------------------------------------------------
-# OPTIMIZADOR OR-TOOLS
+# OPTIMIZADOR
 # -----------------------------------------------------------------------------
 
-def optimizar_cronograma(df, horizonte=36):
+def optimizar_cronograma(df, horizonte):
 
     model = cp_model.CpModel()
 
@@ -176,10 +177,7 @@ def optimizar_cronograma(df, horizonte=36):
             f"intervalo_{i}"
         )
 
-    # -------------------------------------------------------------
-    # CAPACIDAD RECURSOS
-    # -------------------------------------------------------------
-
+    # capacidad técnicos
     CAPACIDAD = {
         "MECANICA": 8,
         "ELECTRICA": 6,
@@ -207,10 +205,7 @@ def optimizar_cronograma(df, horizonte=36):
             cap
         )
 
-    # -------------------------------------------------------------
-    # FUNCIÓN OBJETIVO
-    # -------------------------------------------------------------
-
+    # objetivo minimizar duración total
     makespan = model.NewIntVar(0, horizonte, "makespan")
 
     model.AddMaxEquality(
@@ -220,12 +215,7 @@ def optimizar_cronograma(df, horizonte=36):
 
     model.Minimize(makespan)
 
-    # -------------------------------------------------------------
-    # SOLVER
-    # -------------------------------------------------------------
-
     solver = cp_model.CpSolver()
-
     solver.parameters.max_time_in_seconds = 10
 
     status = solver.Solve(model)
@@ -250,7 +240,7 @@ def optimizar_cronograma(df, horizonte=36):
 
 
 # -----------------------------------------------------------------------------
-# EJECUCIÓN APP
+# EJECUCIÓN
 # -----------------------------------------------------------------------------
 
 if archivo1 and archivo2:
@@ -262,21 +252,12 @@ if archivo1 and archivo2:
     st.dataframe(df)
 
     st.write("Ordenes únicas:", df["orden"].nunique())
-    st.write("Total registros:", len(df))
 
     if st.button("Optimizar cronograma"):
 
-        resultado = optimizar_cronograma(df)
+        resultado = optimizar_cronograma(df, horas_paro)
 
         st.subheader("Cronograma optimizado")
-
-        st.dataframe(resultado)
-
-        # ---------------------------------------------------------
-        # FECHAS REALES
-        # ---------------------------------------------------------
-
-        inicio_parada = datetime(2026, 3, 18, 6, 0)
 
         resultado["inicio_real"] = resultado["start"].apply(
             lambda x: inicio_parada + timedelta(hours=x)
@@ -286,25 +267,21 @@ if archivo1 and archivo2:
             lambda x: inicio_parada + timedelta(hours=x)
         )
 
-        # ---------------------------------------------------------
-        # GANTT
-        # ---------------------------------------------------------
+        st.dataframe(resultado)
 
+        # GANTT
         fig = px.timeline(
             resultado,
             x_start="inicio_real",
             x_end="fin_real",
             y="actividad",
             color="especialidad",
-            title="Cronograma de Actividades"
+            title="Cronograma de Parada"
         )
 
         fig.update_yaxes(autorange="reversed")
 
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
+        st.plotly_chart(fig, use_container_width=True)
 
 else:
 
