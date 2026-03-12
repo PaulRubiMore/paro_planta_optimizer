@@ -47,11 +47,17 @@ def cargar_datos(archivo1, archivo2):
     df["duracion_h"] = df["duracion_h"].fillna(1).astype(float)
     return df
 
+# -----------------------------------------------------------------------------
+# Paso 1-4: Descomposición de órdenes y distribución de horas por especialidad
+# -----------------------------------------------------------------------------
 def descomponer_ordenes(df):
     actividades=[]
     for _,row in df.iterrows():
+        # Dividir especialidades por coma y limpiar espacios
         especs=[e.strip().upper() for e in str(row["especialidad"]).replace("/,",",").replace("/",",").split(",")]
         total=row["duracion_h"]
+
+        # Distribución de horas según número y combinación de especialidades
         if len(especs)==3: porcentajes=[0.5,0.3,0.2]
         elif len(especs)==2:
             if "MECANICA" in especs and "ELECTRICA" in especs: porcentajes=[0.65,0.35]
@@ -59,10 +65,22 @@ def descomponer_ordenes(df):
             elif "MECANICA" in especs and "INSTRUMENTACION" in especs: porcentajes=[0.6,0.4]
             else: porcentajes=[0.5,0.5]
         else: porcentajes=[1]
+
+        # Crear una actividad independiente por especialidad
         for esp,pct in zip(especs,porcentajes):
             dur=total*pct
+            # Regla de redondeo
             dur=int(dur) if dur-int(dur)<1.5 else int(dur)+1
-            actividades.append({"orden":row["orden"],"actividad":row["actividad"],"centro":row["Centro planificación"],"especialidad":esp,"criticidad":str(row["criticidad"]).upper(),"duracion_h":dur})
+            actividades.append({
+                "orden":row["orden"],
+                "actividad":row["actividad"],
+                "centro":row["Centro planificación"],
+                "especialidad":esp,
+                "criticidad":str(row["criticidad"]).upper(),
+                "duracion_h": dur,
+                "duracion_total_orden": total   # <-- nueva columna
+            })
+
     return pd.DataFrame(actividades)
 
 # -----------------------------------------------------------------------------
