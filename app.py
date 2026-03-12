@@ -1,5 +1,6 @@
 # =============================================================================
 # OPTIMIZADOR DE PARADA DE PLANTA - STREAMLIT + OR-TOOLS
+# Genera automáticamente la cantidad de técnicos necesaria
 # =============================================================================
 
 import streamlit as st
@@ -39,7 +40,6 @@ hora_inicio = st.sidebar.time_input("Hora inicio del paro")
 inicio_parada = datetime.combine(fecha_inicio, hora_inicio)
 
 st.sidebar.header("Cargar archivos Excel")
-
 archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo", type=["xlsx"])
 archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades", type=["xlsx"])
 
@@ -63,12 +63,11 @@ def cargar_datos(archivo1, archivo2):
     df1 = limpiar_columnas(df1)
     df2 = limpiar_columnas(df2)
 
-    # detectar columna tiempo
     for col in df1.columns:
         if "TIEMPO" in col.upper():
             df1 = df1.rename(columns={col: "TIEMPO (Hrs)"})
 
-    # filtrar Massy
+    # Filtrar Massy
     df1 = df1[df1["EJECUTOR"].str.contains("massy", case=False, na=False)]
 
     df1 = df1[[
@@ -98,7 +97,6 @@ def cargar_datos(archivo1, archivo2):
     })
 
     df["duracion_h"] = df["duracion_h"].fillna(1).astype(float)
-
     return df
 
 # -----------------------------------------------------------------------------
@@ -107,7 +105,6 @@ def cargar_datos(archivo1, archivo2):
 
 def descomponer_ordenes(df):
     actividades = []
-
     for _, row in df.iterrows():
         especs = [e.strip().upper() for e in row["especialidad"].split(",")]
         total = row["duracion_h"]
@@ -127,9 +124,7 @@ def descomponer_ordenes(df):
 
         for esp, pct in zip(especs, porcentajes):
             dur = total * pct
-            # regla de redondeo
             dur = int(dur) if dur - int(dur) < 1.5 else int(dur)+1
-
             actividades.append({
                 "orden": row["orden"],
                 "actividad": row["actividad"],
@@ -138,44 +133,41 @@ def descomponer_ordenes(df):
                 "criticidad": row["criticidad"].upper(),
                 "duracion_h": dur
             })
-
     return pd.DataFrame(actividades)
 
 # -----------------------------------------------------------------------------
-# Paso 5-6: Generación de técnicos
+# Paso 5-6: Generación automática de técnicos según demanda
 # -----------------------------------------------------------------------------
 
-def generar_tecnicos(df_actividades, paro_horas, max_diario=8):
-    dias_paro = ceil(paro_horas / 24)
-    capacidad_tecnico = dias_paro * max_diario
+def generar_tecnicos(df_actividades, horas_paro):
+    dias_paro = ceil(horas_paro / 24)
+    capacidad_por_tecnico = dias_paro * 8  # 8 h/día
 
     centros = df_actividades["centro"].unique()
     especialidades = df_actividades["especialidad"].unique()
-
     tecnicos = []
 
     for c in centros:
         for e in especialidades:
-            n_actividades = df_actividades[(df_actividades["centro"]==c) & (df_actividades["especialidad"]==e)]["duracion_h"].sum()
-            n_tecnicos = max(1, ceil(n_actividades / capacidad_tecnico))
+            total_horas = df_actividades[(df_actividades["centro"]==c) &
+                                         (df_actividades["especialidad"]==e)]["duracion_h"].sum()
+            n_tecnicos = max(1, ceil(total_horas / capacidad_por_tecnico))
             for t in range(1, n_tecnicos+1):
                 tecnicos.append({
                     "id": f"{c}_{e}_T{t}",
                     "centro": c,
                     "especialidad": e,
-                    "capacidad": capacidad_tecnico
+                    "capacidad": capacidad_por_tecnico
                 })
-
     return pd.DataFrame(tecnicos)
 
 # -----------------------------------------------------------------------------
 # Paso 7: Optimización CP-SAT
 # -----------------------------------------------------------------------------
 
-def optimizar_actividades(df_actividades, df_tecnicos, paro_horas):
+def optimizar_actividades(df_actividades, df_tecnicos, horas_paro):
     model = cp_model.CpModel()
-    horizon = paro_horas
-
+    horizon = horas_paro
     actividades = df_actividades.index.tolist()
     tecnicos = df_tecnicos["id"].tolist()
 
@@ -187,7 +179,7 @@ def optimizar_actividades(df_actividades, df_tecnicos, paro_horas):
     for i in actividades:
         row = df_actividades.loc[i]
         asigna[i] = []
-        techs_disp = df_tecnicos[(df_tecnicos["centro"]==row["centro"]) & 
+        techs_disp = df_tecnicos[(df_tecnicos["centro"]==row["centro"]) &
                                  (df_tecnicos["especialidad"]==row["especialidad"])]["id"].tolist()
         for t in techs_disp:
             s = model.NewIntVar(0, horizon, f"start_{i}_{t}")
@@ -232,14 +224,14 @@ def optimizar_actividades(df_actividades, df_tecnicos, paro_horas):
 # Paso 8: Generar cronograma por hora
 # -----------------------------------------------------------------------------
 
-def generar_cronograma_horas(df_result, paro_horas):
+def generar_cronograma_horas(df_result, horas_paro):
     tecnicos = df_result["tecnico"].unique()
-    cronograma = pd.DataFrame(index=tecnicos, columns=range(paro_horas))
+    cronograma = pd.DataFrame(index=tecnicos, columns=range(horas_paro))
 
     for _, row in df_result.iterrows():
         t = row["tecnico"]
         for h in range(row["start"], row["end"]):
-            if h < paro_horas:
+            if h < horas_paro:
                 cronograma.loc[t, h] = row["actividad"]
 
     return cronograma.fillna("")
@@ -256,7 +248,7 @@ if archivo1 and archivo2:
     if st.button("Generar Cronograma"):
         df_actividades = descomponer_ordenes(df)
         df_tecnicos = generar_tecnicos(df_actividades, horas_paro)
-        st.subheader("Técnicos generados")
+        st.subheader("Técnicos necesarios calculados automáticamente")
         st.dataframe(df_tecnicos)
 
         st.subheader("Optimizando actividades...")
