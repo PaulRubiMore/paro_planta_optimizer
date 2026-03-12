@@ -9,10 +9,10 @@ from math import ceil
 from ortools.sat.python import cp_model
 import plotly.express as px
 
-# ---------------------------- CONFIG APP ----------------------------
 st.set_page_config(page_title="Optimización Parada Planta", page_icon="🏭", layout="wide")
 st.title("🏭 Optimización de Parada de Planta")
 
+# ---------------------------- INPUTS ----------------------------
 horas_paro = st.sidebar.number_input("Duración del paro (horas)", min_value=1, max_value=500, value=36)
 fecha_inicio = st.sidebar.date_input("Fecha inicio del paro")
 hora_inicio = st.sidebar.time_input("Hora inicio del paro")
@@ -21,7 +21,7 @@ inicio_parada = datetime.combine(fecha_inicio, hora_inicio)
 archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo", type=["xlsx"])
 archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades", type=["xlsx"])
 
-# ------------------------- FUNCIONES AUX -------------------------
+# ---------------------------- AUX ----------------------------
 def limpiar_columnas(df):
     df.columns = df.columns.str.strip().str.replace("\n"," ",regex=True).str.replace("  "," ")
     return df
@@ -40,11 +40,11 @@ def cargar_datos(archivo1, archivo2):
     df2 = df2.drop_duplicates(subset=["Actividades"])
     df = df1.merge(df2, on="Actividades", how="left")
     df = df.rename(columns={"Orden":"orden","Actividades":"actividad","TIEMPO (Hrs)":"duracion_h",
-                            "ESPECIALIDAD":"especialidad","CRITICIDAD":"criticidad"})
+                            "ESPECIALIDAD":"especialidad","CRITICIDAD":"criticidad","Centro planificación":"centro"})
     df["duracion_h"] = df["duracion_h"].fillna(1).astype(float)
     return df
 
-# ------------------- DESCOMPOSICIÓN ORDENES -------------------
+# ------------------- DESCOMPOSICIÓN -------------------
 def descomponer_ordenes(df):
     actividades=[]
     for _,row in df.iterrows():
@@ -65,7 +65,7 @@ def descomponer_ordenes(df):
             actividades.append({
                 "orden":row["orden"],
                 "actividad":row["actividad"],
-                "centro":row["Centro planificación"],
+                "centro":row["centro"],
                 "especialidad":esp,
                 "criticidad":str(row["criticidad"]).upper(),
                 "duracion_h": dur,
@@ -74,16 +74,16 @@ def descomponer_ordenes(df):
     return pd.DataFrame(actividades)
 
 # ------------------- OPTIMIZADOR CP-SAT -------------------
-def optimizar_con_ortools(df_actividades, horas_paro):
+def optimizar_con_reglas(df_actividades, horas_paro):
     dias_paro = ceil(horas_paro/24)
-    capacidad_tecnico = dias_paro*8
+    capacidad_diaria = 8
+    capacidad_total = dias_paro * capacidad_diaria
 
     model = cp_model.CpModel()
-    tareas = []
-    all_intervals = []
-    tecnico_counter = {}  # para generar técnicos automáticamente
+    all_tareas = []
 
-    # Crear intervalos para cada fragmento de actividad según capacidad de técnico
+    tecnico_counter = {}  # Para crear técnicos por centro/especialidad
+
     for idx,row in df_actividades.iterrows():
         dur_restante = row["duracion_h"]
         centro = row["centro"]
@@ -93,11 +93,11 @@ def optimizar_con_ortools(df_actividades, horas_paro):
             tecnico_counter[key] = 1
 
         while dur_restante > 0:
-            asign_dur = min(dur_restante, capacidad_tecnico)
+            dur_fragment = min(dur_restante, capacidad_total)  # max que un técnico puede cubrir en todo el paro
             s = model.NewIntVar(0, horas_paro, f's_{idx}_{tecnico_counter[key]}')
             e = model.NewIntVar(0, horas_paro, f'e_{idx}_{tecnico_counter[key]}')
-            interval = model.NewIntervalVar(s, asign_dur, e, f'int_{idx}_{tecnico_counter[key]}')
-            all_intervals.append({
+            interval = model.NewIntervalVar(s, dur_fragment, e, f'int_{idx}_{tecnico_counter[key]}')
+            all_tareas.append({
                 "interval": interval,
                 "start": s,
                 "end": e,
@@ -105,24 +105,24 @@ def optimizar_con_ortools(df_actividades, horas_paro):
                 "actividad": row["actividad"],
                 "centro": centro,
                 "especialidad": esp,
-                "tecnico_id": f"{centro}_{esp}_T{tecnico_counter[key]}"
+                "tecnico_id": f"{centro}_{esp}_T{tecnico_counter[key]}",
+                "dur_fragment": dur_fragment
             })
-            dur_restante -= asign_dur
+            dur_restante -= dur_fragment
             tecnico_counter[key] += 1
 
-    # No-overlap por técnico
+    # Restricción: No-overlap por técnico
     tech_intervals = {}
-    for itv in all_intervals:
-        t_id = itv["tecnico_id"]
+    for t in all_tareas:
+        t_id = t["tecnico_id"]
         if t_id not in tech_intervals: tech_intervals[t_id] = []
-        tech_intervals[t_id].append(itv["interval"])
+        tech_intervals[t_id].append(t["interval"])
     for t_id, ivs in tech_intervals.items():
         model.AddNoOverlap(ivs)
 
     # Minimizar makespan
     makespan = model.NewIntVar(0, horas_paro, "makespan")
-    all_ends = [itv["end"] for itv in all_intervals]
-    model.AddMaxEquality(makespan, all_ends)
+    model.AddMaxEquality(makespan, [t["end"] for t in all_tareas])
     model.Minimize(makespan)
 
     solver = cp_model.CpSolver()
@@ -131,19 +131,19 @@ def optimizar_con_ortools(df_actividades, horas_paro):
 
     resultados=[]
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        for itv in all_intervals:
+        for t in all_tareas:
             resultados.append({
-                "orden": itv["orden"],
-                "actividad": itv["actividad"],
-                "centro": itv["centro"],
-                "especialidad": itv["especialidad"],
-                "tecnico_id": itv["tecnico_id"],
-                "start": solver.Value(itv["start"]),
-                "end": solver.Value(itv["end"])
+                "orden": t["orden"],
+                "actividad": t["actividad"],
+                "centro": t["centro"],
+                "especialidad": t["especialidad"],
+                "tecnico_id": t["tecnico_id"],
+                "start": solver.Value(t["start"]),
+                "end": solver.Value(t["end"])
             })
     return pd.DataFrame(resultados)
 
-# ------------------- CRONOGRAMA POR HORAS -------------------
+# ------------------- CRONOGRAMA -------------------
 def generar_cronograma_horas(df_result, horas_paro):
     tecnicos = df_result["tecnico_id"].unique()
     cronograma=pd.DataFrame(index=tecnicos, columns=range(horas_paro))
@@ -165,7 +165,7 @@ if archivo1 and archivo2:
         st.dataframe(df_actividades)
 
         st.subheader("Optimizando actividades con OR-Tools CP-SAT...")
-        resultado = optimizar_con_ortools(df_actividades, horas_paro)
+        resultado = optimizar_con_reglas(df_actividades, horas_paro)
 
         if not resultado.empty:
             resultado["inicio_real"] = resultado["start"].apply(lambda x: inicio_parada + timedelta(hours=x))
