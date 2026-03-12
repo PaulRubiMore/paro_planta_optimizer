@@ -1,5 +1,5 @@
 # =============================================================================
-# OPTIMIZADOR DE ACTIVIDADES - PARADA DE BOMBEO
+# OPTIMIZADOR DE PARADA DE PLANTA
 # Streamlit + OR-Tools
 # =============================================================================
 
@@ -11,23 +11,23 @@ from ortools.sat.python import cp_model
 
 
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN DE LA APP
+# CONFIGURACIÓN APP
 # -----------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Optimizador Parada Bombeo",
+    page_title="Optimizador Parada Planta",
     page_icon="🏭",
     layout="wide"
 )
 
-st.title("🏭 Optimización de Parada de Bombeo")
+st.title("🏭 Optimización de Parada de Planta")
 
 
 # -----------------------------------------------------------------------------
-# SIDEBAR - CARGA DE ARCHIVOS
+# SIDEBAR
 # -----------------------------------------------------------------------------
 
-st.sidebar.header("Cargar archivos")
+st.sidebar.header("Cargar archivos Excel")
 
 archivo1 = st.sidebar.file_uploader(
     "Archivo 1 - Paro de bombeo",
@@ -41,32 +41,40 @@ archivo2 = st.sidebar.file_uploader(
 
 
 # -----------------------------------------------------------------------------
-# FUNCIÓN PARA CARGAR Y LIMPIAR DATOS
+# FUNCIÓN LIMPIEZA COLUMNAS
+# -----------------------------------------------------------------------------
+
+def limpiar_columnas(df):
+
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.replace("\n", " ", regex=True)
+        .str.replace("  ", " ")
+    )
+
+    return df
+
+
+# -----------------------------------------------------------------------------
+# CARGA DE DATOS
 # -----------------------------------------------------------------------------
 
 def cargar_datos(archivo1, archivo2):
 
-    # leer archivos
     df1 = pd.read_excel(archivo1)
     df2 = pd.read_excel(archivo2)
 
+    df1 = limpiar_columnas(df1)
+    df2 = limpiar_columnas(df2)
+
     # -------------------------------------------------------------
-    # LIMPIAR NOMBRES DE COLUMNAS
+    # DETECTAR COLUMNA TIEMPO AUTOMÁTICAMENTE
     # -------------------------------------------------------------
 
-    df1.columns = (
-        df1.columns
-        .str.strip()
-        .str.replace("\n", " ", regex=True)
-        .str.replace("  ", " ")
-    )
-
-    df2.columns = (
-        df2.columns
-        .str.strip()
-        .str.replace("\n", " ", regex=True)
-        .str.replace("  ", " ")
-    )
+    for col in df1.columns:
+        if "TIEMPO" in col.upper():
+            df1 = df1.rename(columns={col: "TIEMPO (Hrs)"})
 
     # -------------------------------------------------------------
     # FILTRAR MASSY ENERGY
@@ -81,26 +89,21 @@ def cargar_datos(archivo1, archivo2):
     ]
 
     # -------------------------------------------------------------
-    # SELECCIONAR COLUMNAS
+    # SELECCIÓN COLUMNAS
     # -------------------------------------------------------------
 
-    columnas_df1 = [
-        "Centro planificación",
-        "Actividades",
-        "Orden",
-        "TIEMPO (Hrs)",
-        "ESTADO",
-        "ESPECIALIDAD",
-        "EJECUTOR",
-        "CRITICIDAD"
+    df1 = df1[
+        [
+            "Centro planificación",
+            "Actividades",
+            "Orden",
+            "TIEMPO (Hrs)",
+            "ESTADO",
+            "ESPECIALIDAD",
+            "EJECUTOR",
+            "CRITICIDAD"
+        ]
     ]
-
-    # si TIEMPO (Hrs) no existe buscamos columna similar
-    for col in df1.columns:
-        if "TIEMPO" in col.upper():
-            df1 = df1.rename(columns={col: "TIEMPO (Hrs)"})
-
-    df1 = df1[columnas_df1]
 
     df2 = df2[
         [
@@ -109,6 +112,13 @@ def cargar_datos(archivo1, archivo2):
             "Sector"
         ]
     ]
+
+    # -------------------------------------------------------------
+    # ELIMINAR DUPLICADOS
+    # -------------------------------------------------------------
+
+    df1 = df1.drop_duplicates(subset=["Orden"])
+    df2 = df2.drop_duplicates(subset=["Actividades"])
 
     # -------------------------------------------------------------
     # MERGE
@@ -120,12 +130,15 @@ def cargar_datos(archivo1, archivo2):
         how="left"
     )
 
-    # renombrar columnas
+    # -------------------------------------------------------------
+    # RENOMBRAR COLUMNAS
+    # -------------------------------------------------------------
+
     df = df.rename(
         columns={
-            "TIEMPO (Hrs)": "duracion_h",
-            "Actividades": "actividad",
             "Orden": "orden",
+            "Actividades": "actividad",
+            "TIEMPO (Hrs)": "duracion_h",
             "ESPECIALIDAD": "especialidad",
             "CRITICIDAD": "criticidad"
         }
@@ -135,8 +148,9 @@ def cargar_datos(archivo1, archivo2):
 
     return df
 
+
 # -----------------------------------------------------------------------------
-# FUNCIÓN DE OPTIMIZACIÓN
+# OPTIMIZADOR OR-TOOLS
 # -----------------------------------------------------------------------------
 
 def optimizar_cronograma(df, horizonte=36):
@@ -153,7 +167,6 @@ def optimizar_cronograma(df, horizonte=36):
     for i in tareas:
 
         inicio[i] = model.NewIntVar(0, horizonte, f"inicio_{i}")
-
         fin[i] = model.NewIntVar(0, horizonte, f"fin_{i}")
 
         intervalos[i] = model.NewIntervalVar(
@@ -164,7 +177,7 @@ def optimizar_cronograma(df, horizonte=36):
         )
 
     # -------------------------------------------------------------
-    # CAPACIDAD DE TÉCNICOS
+    # CAPACIDAD RECURSOS
     # -------------------------------------------------------------
 
     CAPACIDAD = {
@@ -182,9 +195,7 @@ def optimizar_cronograma(df, horizonte=36):
             if df.loc[i, "especialidad"] == esp
         ]
 
-        intervalos_esp = [
-            intervalos[i] for i in tareas_esp
-        ]
+        intervalos_esp = [intervalos[i] for i in tareas_esp]
 
         demandas = [1] * len(intervalos_esp)
 
@@ -239,22 +250,25 @@ def optimizar_cronograma(df, horizonte=36):
 
 
 # -----------------------------------------------------------------------------
-# EJECUCIÓN PRINCIPAL
+# EJECUCIÓN APP
 # -----------------------------------------------------------------------------
 
 if archivo1 and archivo2:
 
     df = cargar_datos(archivo1, archivo2)
 
-    st.subheader("📊 Datos filtrados Massy Energy")
+    st.subheader("Datos filtrados Massy Energy")
 
     st.dataframe(df)
 
-    if st.button("🚀 Optimizar cronograma"):
+    st.write("Ordenes únicas:", df["orden"].nunique())
+    st.write("Total registros:", len(df))
+
+    if st.button("Optimizar cronograma"):
 
         resultado = optimizar_cronograma(df)
 
-        st.subheader("📅 Cronograma optimizado")
+        st.subheader("Cronograma optimizado")
 
         st.dataframe(resultado)
 
@@ -273,7 +287,7 @@ if archivo1 and archivo2:
         )
 
         # ---------------------------------------------------------
-        # DIAGRAMA DE GANTT
+        # GANTT
         # ---------------------------------------------------------
 
         fig = px.timeline(
@@ -294,4 +308,4 @@ if archivo1 and archivo2:
 
 else:
 
-    st.info("👈 Carga los dos archivos Excel para iniciar.")
+    st.info("Cargar los dos archivos Excel para iniciar.")
