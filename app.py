@@ -1,5 +1,5 @@
 # =============================================================================
-# OPTIMIZADOR DE PARADA DE PLANTA CON DIAGNÓSTICO
+# OPTIMIZADOR DE PARADA DE PLANTA CON DIAGNÓSTICO AUTOMÁTICO
 # =============================================================================
 
 import streamlit as st
@@ -9,23 +9,25 @@ from math import ceil
 from ortools.sat.python import cp_model
 import plotly.express as px
 
+
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN APP
+# CONFIGURACIÓN
 # -----------------------------------------------------------------------------
 
 st.set_page_config(page_title="Optimización Parada Planta", page_icon="🏭", layout="wide")
 
 st.title("🏭 Optimización de Parada de Planta")
 
-horas_paro = st.sidebar.number_input("Duración del paro (horas)", 1, 500, 36)
+horas_paro = st.sidebar.number_input("Duración del paro (horas)",1,500,36)
 
 fecha_inicio = st.sidebar.date_input("Fecha inicio del paro")
 hora_inicio = st.sidebar.time_input("Hora inicio del paro")
 
-inicio_parada = datetime.combine(fecha_inicio, hora_inicio)
+inicio_parada = datetime.combine(fecha_inicio,hora_inicio)
 
-archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo", type=["xlsx"])
-archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades", type=["xlsx"])
+archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo",type=["xlsx"])
+archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades",type=["xlsx"])
+
 
 # -----------------------------------------------------------------------------
 # LIMPIAR COLUMNAS
@@ -55,8 +57,6 @@ def cargar_datos(archivo1,archivo2):
     for col in df1.columns:
         if "TIEMPO" in col.upper():
             df1 = df1.rename(columns={col:"TIEMPO (Hrs)"})
-
-    df1 = df1[df1["EJECUTOR"].str.contains("massy",case=False,na=False)]
 
     df1 = df1[[
         "Centro planificación",
@@ -88,7 +88,7 @@ def cargar_datos(archivo1,archivo2):
 
 
 # -----------------------------------------------------------------------------
-# DESCOMPONER ORDENES POR ESPECIALIDAD
+# DESCOMPONER ÓRDENES
 # -----------------------------------------------------------------------------
 
 def descomponer_ordenes(df):
@@ -141,44 +141,31 @@ def descomponer_ordenes(df):
 
 
 # -----------------------------------------------------------------------------
-# DIAGNOSTICO DEL MODELO
+# DIAGNÓSTICO
 # -----------------------------------------------------------------------------
 
-def diagnostico_modelo(df_actividades,horas_paro):
+def diagnostico(df_actividades,horas_paro):
 
     dias_paro = ceil(horas_paro/24)
-    capacidad_tecnico = dias_paro*8
-
-    centros = df_actividades["centro"].unique()
-    especialidades = ["MECANICA","ELECTRICA","INSTRUMENTACION"]
+    capacidad = dias_paro*8
 
     reporte=[]
 
-    for c in centros:
+    for (centro,esp),grupo in df_actividades.groupby(["centro","especialidad"]):
 
-        for e in especialidades:
+        total = grupo["duracion_h"].sum()
+        max_act = grupo["duracion_h"].max()
 
-            df_temp = df_actividades[
-                (df_actividades["centro"]==c) &
-                (df_actividades["especialidad"]==e)
-            ]
+        tecnicos = ceil(total/capacidad)
 
-            if df_temp.empty:
-                continue
-
-            total_horas = df_temp["duracion_h"].sum()
-            max_act = df_temp["duracion_h"].max()
-
-            tecnicos = ceil(total_horas/capacidad_tecnico)
-
-            reporte.append({
-                "Centro":c,
-                "Especialidad":e,
-                "Horas requeridas":total_horas,
-                "Actividad más larga":max_act,
-                "Capacidad técnico":capacidad_tecnico,
-                "Técnicos necesarios":tecnicos
-            })
+        reporte.append({
+            "Centro":centro,
+            "Especialidad":esp,
+            "Horas requeridas":total,
+            "Actividad más larga":max_act,
+            "Capacidad por técnico":capacidad,
+            "Técnicos necesarios":tecnicos
+        })
 
     return pd.DataFrame(reporte)
 
@@ -187,37 +174,26 @@ def diagnostico_modelo(df_actividades,horas_paro):
 # OPTIMIZADOR CP-SAT
 # -----------------------------------------------------------------------------
 
-def optimizar_asignacion(df_actividades,horas_paro):
+def optimizar(df_actividades,horas_paro):
 
     model = cp_model.CpModel()
-
-    centros = df_actividades["centro"].unique()
-
-    tecnicos = {}
 
     dias_paro = ceil(horas_paro/24)
     capacidad = dias_paro*8
 
-    for c in centros:
+    centros = df_actividades["centro"].unique()
 
-        tecnicos[c]={}
+    tecnicos={}
 
-        for esp in df_actividades["especialidad"].unique():
+    for (c,esp),grupo in df_actividades.groupby(["centro","especialidad"]):
 
-            df_temp=df_actividades[
-                (df_actividades["centro"]==c)&
-                (df_actividades["especialidad"]==esp)
-            ]
+        total=grupo["duracion_h"].sum()
 
-            if df_temp.empty:
-                continue
+        n=ceil(total/capacidad)
+        n=max(1,n)
 
-            total=df_temp["duracion_h"].sum()
-
-            n=ceil(total/capacidad)
-            n=max(1,n)
-
-            tecnicos[c][esp]=[f"{c}_{esp}_T{i}" for i in range(n)]
+        tecnicos.setdefault(c,{})
+        tecnicos[c][esp]=[f"{c}_{esp}_T{i}" for i in range(n)]
 
     intervalos={}
     asignaciones={}
@@ -227,9 +203,6 @@ def optimizar_asignacion(df_actividades,horas_paro):
         c=row["centro"]
         esp=row["especialidad"]
         dur=int(row["duracion_h"])
-
-        if esp not in tecnicos.get(c,{}):
-            continue
 
         for t in tecnicos[c][esp]:
 
@@ -249,12 +222,8 @@ def optimizar_asignacion(df_actividades,horas_paro):
         c=row["centro"]
         esp=row["especialidad"]
 
-        if esp not in tecnicos.get(c,{}):
-            continue
-
         model.AddBoolOr([
-            asignaciones[(i,t)][2]
-            for t in tecnicos[c][esp]
+            asignaciones[(i,t)][2] for t in tecnicos[c][esp]
         ])
 
     for c in tecnicos:
@@ -280,10 +249,34 @@ def optimizar_asignacion(df_actividades,horas_paro):
 
     status=solver.Solve(model)
 
-    cronograma=[]
+    # -------------------------------------------------------------
+    # SI NO HAY SOLUCIÓN → MOSTRAR DIAGNÓSTICO
+    # -------------------------------------------------------------
 
-    if status not in [cp_model.FEASIBLE,cp_model.OPTIMAL]:
+    if status not in [cp_model.OPTIMAL,cp_model.FEASIBLE]:
+
+        st.error("❌ No se pudo generar un cronograma")
+
+        st.subheader("🔎 Diagnóstico del problema")
+
+        df_diag = diagnostico(df_actividades,horas_paro)
+
+        st.dataframe(df_diag)
+
+        st.warning(
+            "Esto ocurre normalmente cuando:\n"
+            "- Las horas totales exceden la capacidad disponible\n"
+            "- Una actividad dura más que el paro\n"
+            "- Se necesitan más técnicos"
+        )
+
         return pd.DataFrame()
+
+    # -------------------------------------------------------------
+    # CONSTRUIR CRONOGRAMA
+    # -------------------------------------------------------------
+
+    cronograma=[]
 
     for (i,t),(start,end,assigned) in asignaciones.items():
 
@@ -292,6 +285,7 @@ def optimizar_asignacion(df_actividades,horas_paro):
             row=df_actividades.loc[i]
 
             cronograma.append({
+
                 "Orden":row["orden"],
                 "Actividad":row["actividad"],
                 "Centro":row["centro"],
@@ -314,23 +308,16 @@ if archivo1 and archivo2:
 
     df_actividades=descomponer_ordenes(df)
 
-    st.subheader("🔎 Diagnóstico del modelo")
-
-    diag=diagnostico_modelo(df_actividades,horas_paro)
-
-    st.dataframe(diag)
+    st.subheader("Actividades generadas")
+    st.write("Total actividades:",len(df_actividades))
 
     if st.button("🚀 Ejecutar optimización"):
 
         st.info("Calculando cronograma...")
 
-        cronograma=optimizar_asignacion(df_actividades,horas_paro)
+        cronograma=optimizar(df_actividades,horas_paro)
 
-        if cronograma.empty:
-
-            st.error("No se pudo generar cronograma. Revisar diagnóstico.")
-
-        else:
+        if not cronograma.empty:
 
             st.success("Cronograma generado")
 
