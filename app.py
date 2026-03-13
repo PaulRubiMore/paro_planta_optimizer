@@ -1,5 +1,5 @@
 # =============================================================================
-# APP STREAMLIT - OPTIMIZACIÓN PARADA DE PLANTA
+# OPTIMIZADOR DE PARADA DE PLANTA CON ASIGNACIÓN AUTOMÁTICA DE TÉCNICOS
 # =============================================================================
 
 import streamlit as st
@@ -9,12 +9,15 @@ from math import ceil
 from ortools.sat.python import cp_model
 import plotly.express as px
 
-# -------------------------------------------------------------------------
-# Configuración de la app
-# -------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# CONFIGURACIÓN APP
+# ---------------------------------------------------------------------------
 st.set_page_config(page_title="Optimización Parada Planta", page_icon="🏭", layout="wide")
 st.title("🏭 Optimización de Parada de Planta")
 
+# ---------------------------------------------------------------------------
+# INPUTS
+# ---------------------------------------------------------------------------
 horas_paro = st.sidebar.number_input("Duración del paro (horas)", min_value=1, max_value=500, value=36)
 fecha_inicio = st.sidebar.date_input("Fecha inicio del paro")
 hora_inicio = st.sidebar.time_input("Hora inicio del paro")
@@ -23,9 +26,9 @@ inicio_parada = datetime.combine(fecha_inicio, hora_inicio)
 archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo", type=["xlsx"])
 archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades", type=["xlsx"])
 
-# -------------------------------------------------------------------------
-# Funciones auxiliares
-# -------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# FUNCIONES AUXILIARES
+# ---------------------------------------------------------------------------
 def limpiar_columnas(df):
     df.columns = df.columns.str.strip().str.replace("\n"," ",regex=True).str.replace("  "," ")
     return df
@@ -43,20 +46,13 @@ def cargar_datos(archivo1, archivo2):
     df1 = df1.drop_duplicates(subset=["Orden"])
     df2 = df2.drop_duplicates(subset=["Actividades"])
     df = df1.merge(df2, on="Actividades", how="left")
-    df = df.rename(columns={
-        "Orden":"orden",
-        "Actividades":"actividad",
-        "TIEMPO (Hrs)":"duracion_h",
-        "ESPECIALIDAD":"especialidad",
-        "CRITICIDAD":"criticidad",
-        "Centro planificación":"centro"
-    })
+    df = df.rename(columns={"Orden":"orden","Actividades":"actividad","TIEMPO (Hrs)":"duracion_h","ESPECIALIDAD":"especialidad","CRITICIDAD":"criticidad"})
     df["duracion_h"] = df["duracion_h"].fillna(1).astype(float)
     return df
 
-# -------------------------------------------------------------------------
-# Paso 1-4: Descomposición de órdenes
-# -------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Descomposición de órdenes en actividades por especialidad
+# ---------------------------------------------------------------------------
 def descomponer_ordenes(df):
     actividades=[]
     for _,row in df.iterrows():
@@ -77,7 +73,7 @@ def descomponer_ordenes(df):
             actividades.append({
                 "orden":row["orden"],
                 "actividad":row["actividad"],
-                "centro":row["centro"],
+                "centro":row["Centro planificación"],
                 "especialidad":esp,
                 "criticidad":str(row["criticidad"]).upper(),
                 "duracion_h": dur,
@@ -85,90 +81,87 @@ def descomponer_ordenes(df):
             })
     return pd.DataFrame(actividades)
 
-# -------------------------------------------------------------------------
-# Crear bloques diarios y técnicos necesarios
-# -------------------------------------------------------------------------
-def crear_bloques(df_actividades, horas_paro):
-    dias_paro = ceil(horas_paro / 24)
-    capacidad_dia = 8
-    capacidad_tecnico = dias_paro * capacidad_dia
-    bloques=[]
-    for _,row in df_actividades.iterrows():
-        dur_total = row["duracion_h"]
-        min_tecnicos = ceil(dur_total / capacidad_tecnico)
+# ---------------------------------------------------------------------------
+# Optimización con CP-SAT respetando reglas de técnicos
+# ---------------------------------------------------------------------------
+def optimizar_actividades(df_actividades, horas_paro):
+    dias_paro = ceil(horas_paro/24)
+    capacidad_diaria = 8
+    capacidad_total = dias_paro * capacidad_diaria
 
-        for t in range(min_tecnicos):
-            horas_restantes = dur_total - t*capacidad_tecnico
-            dur_tecnico = min(capacidad_tecnico, horas_restantes)
-            for d in range(dias_paro):
-                inicio = d*capacidad_dia
-                fin = inicio + min(capacidad_dia, dur_tecnico - d*capacidad_dia)
-                if fin > inicio:
-                    bloques.append({
-                        "orden": row["orden"],
-                        "actividad": row["actividad"],
-                        "centro": row["centro"],
-                        "especialidad": row["especialidad"],
-                        "tecnico_idx": t+1,
-                        "dia": d+1,
-                        "inicio_rel": inicio,
-                        "fin_rel": fin
-                    })
-    return pd.DataFrame(bloques)
-
-# -------------------------------------------------------------------------
-# Optimización con CP-SAT
-# -------------------------------------------------------------------------
-def optimizar(bloques):
     model = cp_model.CpModel()
-    interval_vars={}
-    for idx,row in bloques.iterrows():
-        start = model.NewIntVar(row["inicio_rel"], row["fin_rel"], f'start_{idx}')
-        end = model.NewIntVar(row["inicio_rel"], row["fin_rel"], f'end_{idx}')
-        interval = model.NewIntervalVar(start, row["fin_rel"]-row["inicio_rel"], end, f'int_{idx}')
-        interval_vars[idx]=(start,end,interval)
+    intervalos = {}
+    resultados = []
 
-    for (centro, esp, tec), g in bloques.groupby(["centro","especialidad","tecnico_idx"]):
-        vars_tecnico = [interval_vars[idx][2] for idx in g.index]
-        if vars_tecnico:
-            model.AddNoOverlap(vars_tecnico)
+    # Crear intervalos fragmentables por técnico según capacidad total
+    for idx, row in df_actividades.iterrows():
+        dur = row["duracion_h"]
+        n_fragments = ceil(dur / capacidad_total)  # si excede la capacidad de un técnico, se crean fragmentos
+        fragment_dur = [capacidad_total]*(n_fragments-1) + [dur-(n_fragments-1)*capacidad_total]
+        intervalos[idx] = []
+        for f, fdur in enumerate(fragment_dur):
+            s = model.NewIntVar(0, horas_paro, f"s_{idx}_{f}")
+            e = model.NewIntVar(0, horas_paro, f"e_{idx}_{f}")
+            interv = model.NewIntervalVar(s, fdur, e, f"int_{idx}_{f}")
+            intervalos[idx].append((s,e,interv,f+1))
 
+    # Agrupar por centro y especialidad para restricción de NoOverlap
+    grupos = df_actividades.groupby(["centro","especialidad"]).groups
+    for (c,e), idxs in grupos.items():
+        tech_intervals=[]
+        for idx in idxs:
+            for s,e_,i,frag in intervalos[idx]:
+                tech_intervals.append(i)
+        model.AddNoOverlap(tech_intervals)
+
+    # Minimizar makespan
+    makespan = model.NewIntVar(0, horas_paro, "makespan")
+    all_ends = [e_ for idxs in intervalos.values() for s,e_,i,frag in idxs]
+    model.AddMaxEquality(makespan, all_ends)
+    model.Minimize(makespan)
+
+    # Resolver
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds=30
+    solver.parameters.max_time_in_seconds = 60
     status = solver.Solve(model)
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        resultados=[]
-        for idx,row in bloques.iterrows():
-            s,e,_ = interval_vars[idx]
-            resultados.append({
-                **row,
-                "start": solver.Value(s),
-                "end": solver.Value(e),
-                "inicio_real": inicio_parada + timedelta(hours=solver.Value(s)),
-                "fin_real": inicio_parada + timedelta(hours=solver.Value(e))
-            })
-        return pd.DataFrame(resultados)
-    else:
-        return pd.DataFrame()
+        for idx,row in df_actividades.iterrows():
+            for s,e_,i,frag in intervalos[idx]:
+                resultados.append({
+                    **row,
+                    "fragmento": frag,
+                    "start": solver.Value(s),
+                    "end": solver.Value(e_)
+                })
 
-# -------------------------------------------------------------------------
-# Cronograma por técnico y hora
-# -------------------------------------------------------------------------
-def generar_cronograma(df_result, horas_paro):
+    df_result = pd.DataFrame(resultados)
+
+    # Asignar técnicos automáticamente: grupo por centro, especialidad y fragmento
+    if not df_result.empty:
+        df_result["tecnico_id"] = df_result.groupby(["centro","especialidad","fragmento"]).ngroup()+1
+    else:
+        df_result = pd.DataFrame(columns=list(df_actividades.columns)+["fragmento","start","end","tecnico_id"])
+
+    return df_result
+
+# ---------------------------------------------------------------------------
+# Generar cronograma por horas
+# ---------------------------------------------------------------------------
+def generar_cronograma_horas(df_result, horas_paro):
     if df_result.empty: return pd.DataFrame()
-    tecnicos = df_result["tecnico_idx"].unique()
-    cronograma = pd.DataFrame(index=tecnicos, columns=range(horas_paro))
-    for _,row in df_result.iterrows():
-        t = row["tecnico_idx"]
-        for h in range(int(row["start"]), int(row["end"])):
+    tecnicos = df_result["tecnico_id"].unique()
+    cronograma=pd.DataFrame(index=tecnicos, columns=range(horas_paro))
+    for _, row in df_result.iterrows():
+        t = row["tecnico_id"]
+        for h in range(row["start"], row["end"]):
             if h < horas_paro:
                 cronograma.loc[t,h] = row["actividad"]
     return cronograma.fillna("")
 
-# -------------------------------------------------------------------------
-# Ejecución app
-# -------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# EJECUCIÓN APP
+# ---------------------------------------------------------------------------
 if archivo1 and archivo2:
     df = cargar_datos(archivo1, archivo2)
     st.subheader("Datos filtrados Massy Energy")
@@ -179,30 +172,29 @@ if archivo1 and archivo2:
         st.subheader("Actividades descompuestas por especialidad")
         st.dataframe(df_actividades)
 
-        st.subheader("Creando bloques y asignando técnicos...")
-        bloques = crear_bloques(df_actividades, horas_paro)
-        st.dataframe(bloques)
-
         st.subheader("Optimizando actividades...")
-        resultado = optimizar(bloques)
+        resultado = optimizar_actividades(df_actividades, horas_paro)
 
         if not resultado.empty:
+            resultado["inicio_real"] = resultado["start"].apply(lambda x: inicio_parada + timedelta(hours=x))
+            resultado["fin_real"] = resultado["end"].apply(lambda x: inicio_parada + timedelta(hours=x))
             st.subheader("Cronograma optimizado")
             st.dataframe(resultado)
-            
-            cronograma_horas = generar_cronograma(resultado, horas_paro)
-            st.subheader("Cronograma por técnico y hora")
-            st.dataframe(cronograma_horas)
-
-            fig = px.timeline(resultado,
-                              x_start="inicio_real",
-                              x_end="fin_real",
-                              y="tecnico_idx",
-                              color="especialidad",
-                              title="Cronograma de Parada")
-            fig.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig,use_container_width=True)
         else:
             st.warning("No se pudo generar un cronograma. Revisa los datos o la duración del paro.")
+
+        cronograma_horas = generar_cronograma_horas(resultado, horas_paro)
+        st.subheader("Cronograma por técnico y hora")
+        st.dataframe(cronograma_horas)
+
+        fig = px.timeline(resultado,
+                          x_start="inicio_real",
+                          x_end="fin_real",
+                          y="tecnico_id",
+                          color="especialidad",
+                          title="Cronograma de Parada")
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig,use_container_width=True)
+
 else:
     st.info("Cargar los dos archivos Excel para iniciar.")
