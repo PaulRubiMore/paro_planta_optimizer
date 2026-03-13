@@ -12,6 +12,7 @@ import plotly.express as px
 # -----------------------------------------------------------------------------
 # CONFIGURACIÓN APP
 # -----------------------------------------------------------------------------
+
 st.set_page_config(page_title="Optimización Parada Planta", page_icon="🏭", layout="wide")
 
 st.title("🏭 Optimización de Parada de Planta")
@@ -27,15 +28,21 @@ archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo", type=["xlsx"])
 archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades", type=["xlsx"])
 
 # -----------------------------------------------------------------------------
-# FUNCIONES
+# LIMPIAR COLUMNAS
 # -----------------------------------------------------------------------------
 
 def limpiar_columnas(df):
+
     df.columns = df.columns.str.strip()
     df.columns = df.columns.str.replace("\n"," ",regex=True)
     df.columns = df.columns.str.replace("  "," ")
+
     return df
 
+
+# -----------------------------------------------------------------------------
+# CARGAR DATOS
+# -----------------------------------------------------------------------------
 
 def cargar_datos(archivo1,archivo2):
 
@@ -81,7 +88,7 @@ def cargar_datos(archivo1,archivo2):
 
 
 # -----------------------------------------------------------------------------
-# DESCOMPONER ORDENES
+# DESCOMPONER ORDENES POR ESPECIALIDAD
 # -----------------------------------------------------------------------------
 
 def descomponer_ordenes(df):
@@ -91,7 +98,6 @@ def descomponer_ordenes(df):
     for _,row in df.iterrows():
 
         especs = str(row["especialidad"]).replace("/",",").split(",")
-
         especs = [e.strip().upper() for e in especs]
 
         total = row["duracion_h"]
@@ -135,21 +141,18 @@ def descomponer_ordenes(df):
 
 
 # -----------------------------------------------------------------------------
-# DIAGNÓSTICO DEL MODELO
+# DIAGNOSTICO DEL MODELO
 # -----------------------------------------------------------------------------
 
-def diagnostico_modelo(df_actividades, horas_paro):
-
-    st.subheader("🔎 Diagnóstico del modelo")
+def diagnostico_modelo(df_actividades,horas_paro):
 
     dias_paro = ceil(horas_paro/24)
-    capacidad_tecnico = dias_paro * 8
+    capacidad_tecnico = dias_paro*8
 
     centros = df_actividades["centro"].unique()
-
     especialidades = ["MECANICA","ELECTRICA","INSTRUMENTACION"]
 
-    reporte = []
+    reporte=[]
 
     for c in centros:
 
@@ -164,124 +167,109 @@ def diagnostico_modelo(df_actividades, horas_paro):
                 continue
 
             total_horas = df_temp["duracion_h"].sum()
-
             max_act = df_temp["duracion_h"].max()
 
-            tecnicos_necesarios = ceil(total_horas / capacidad_tecnico)
+            tecnicos = ceil(total_horas/capacidad_tecnico)
 
             reporte.append({
                 "Centro":c,
                 "Especialidad":e,
                 "Horas requeridas":total_horas,
-                "Duración actividad más larga":max_act,
-                "Capacidad por técnico":capacidad_tecnico,
-                "Técnicos mínimos necesarios":tecnicos_necesarios
+                "Actividad más larga":max_act,
+                "Capacidad técnico":capacidad_tecnico,
+                "Técnicos necesarios":tecnicos
             })
 
-            if max_act > horas_paro:
-
-                st.error(
-                    f"Actividad imposible: {c}-{e} requiere {max_act}h "
-                    f"y el paro solo dura {horas_paro}h"
-                )
-
-    st.dataframe(pd.DataFrame(reporte))
+    return pd.DataFrame(reporte)
 
 
 # -----------------------------------------------------------------------------
-# OPTIMIZADOR
+# OPTIMIZADOR CP-SAT
 # -----------------------------------------------------------------------------
 
 def optimizar_asignacion(df_actividades,horas_paro):
 
     model = cp_model.CpModel()
 
-    dias_paro = ceil(horas_paro/24)
-
-    capacidad_tecnico = dias_paro * 8
-
     centros = df_actividades["centro"].unique()
 
-    especialidades=["MECANICA","ELECTRICA","INSTRUMENTACION"]
+    tecnicos = {}
 
-    tecnicos={}
+    dias_paro = ceil(horas_paro/24)
+    capacidad = dias_paro*8
 
     for c in centros:
 
         tecnicos[c]={}
 
-        for e in especialidades:
+        for esp in df_actividades["especialidad"].unique():
 
-            df_temp = df_actividades[
-                (df_actividades["centro"]==c) &
-                (df_actividades["especialidad"]==e)
+            df_temp=df_actividades[
+                (df_actividades["centro"]==c)&
+                (df_actividades["especialidad"]==esp)
             ]
 
-            total_horas = df_temp["duracion_h"].sum()
-
-            if total_horas==0:
+            if df_temp.empty:
                 continue
 
-            n_tecnicos = ceil(total_horas/capacidad_tecnico)
+            total=df_temp["duracion_h"].sum()
 
-            n_tecnicos=max(1,n_tecnicos)
+            n=ceil(total/capacidad)
+            n=max(1,n)
 
-            tecnicos[c][e]=[
-                f"{c}_{e}_T{i+1}" for i in range(n_tecnicos)
-            ]
+            tecnicos[c][esp]=[f"{c}_{esp}_T{i}" for i in range(n)]
 
     intervalos={}
     asignaciones={}
 
     for i,row in df_actividades.iterrows():
 
+        c=row["centro"]
         esp=row["especialidad"]
-        centro=row["centro"]
         dur=int(row["duracion_h"])
 
-        if esp not in tecnicos.get(centro,{}):
+        if esp not in tecnicos.get(c,{}):
             continue
 
-        for t in tecnicos[centro][esp]:
+        for t in tecnicos[c][esp]:
 
-            start=model.NewIntVar(0,horas_paro,f"start_{i}_{t}")
-            end=model.NewIntVar(0,horas_paro,f"end_{i}_{t}")
-            assigned=model.NewBoolVar(f"assigned_{i}_{t}")
+            start=model.NewIntVar(0,horas_paro,f"s_{i}_{t}")
+            end=model.NewIntVar(0,horas_paro,f"e_{i}_{t}")
+            assigned=model.NewBoolVar(f"a_{i}_{t}")
 
             interval=model.NewOptionalIntervalVar(
-                start,dur,end,assigned,f"interval_{i}_{t}"
+                start,dur,end,assigned,f"int_{i}_{t}"
             )
 
             intervalos[(i,t)]=interval
-            asignaciones[(i,t)]=(start,end,assigned,dur)
+            asignaciones[(i,t)]=(start,end,assigned)
 
     for i,row in df_actividades.iterrows():
 
+        c=row["centro"]
         esp=row["especialidad"]
-        centro=row["centro"]
 
-        if esp not in tecnicos.get(centro,{}):
+        if esp not in tecnicos.get(c,{}):
             continue
 
         model.AddBoolOr([
             asignaciones[(i,t)][2]
-            for t in tecnicos[centro][esp]
+            for t in tecnicos[c][esp]
         ])
 
     for c in tecnicos:
 
-        for e in tecnicos[c]:
+        for esp in tecnicos[c]:
 
-            for t in tecnicos[c][e]:
+            for t in tecnicos[c][esp]:
 
                 lista=[]
 
                 for i,row in df_actividades.iterrows():
 
-                    if row["centro"]==c and row["especialidad"]==e:
+                    if row["centro"]==c and row["especialidad"]==esp:
 
                         if (i,t) in intervalos:
-
                             lista.append(intervalos[(i,t)])
 
                 if len(lista)>1:
@@ -294,27 +282,23 @@ def optimizar_asignacion(df_actividades,horas_paro):
 
     cronograma=[]
 
-    if status not in [cp_model.OPTIMAL,cp_model.FEASIBLE]:
-
-        st.error("⚠ No se pudo generar un cronograma. Revisa el diagnóstico arriba.")
+    if status not in [cp_model.FEASIBLE,cp_model.OPTIMAL]:
         return pd.DataFrame()
 
-    for (i,t),(start,end,assigned,dur) in asignaciones.items():
+    for (i,t),(start,end,assigned) in asignaciones.items():
 
         if solver.Value(assigned)==1:
 
             row=df_actividades.loc[i]
 
             cronograma.append({
-
                 "Orden":row["orden"],
                 "Actividad":row["actividad"],
                 "Centro":row["centro"],
                 "Especialidad":row["especialidad"],
-                "Técnico":t,
-                "Hora inicio":inicio_parada+timedelta(hours=solver.Value(start)),
-                "Hora fin":inicio_parada+timedelta(hours=solver.Value(end)),
-                "Duración":dur
+                "Tecnico":t,
+                "Inicio":inicio_parada+timedelta(hours=solver.Value(start)),
+                "Fin":inicio_parada+timedelta(hours=solver.Value(end))
             })
 
     return pd.DataFrame(cronograma)
@@ -330,27 +314,37 @@ if archivo1 and archivo2:
 
     df_actividades=descomponer_ordenes(df)
 
-    diagnostico_modelo(df_actividades,horas_paro)
+    st.subheader("🔎 Diagnóstico del modelo")
 
-    st.info("Calculando cronograma...")
+    diag=diagnostico_modelo(df_actividades,horas_paro)
 
-    cronograma=optimizar_asignacion(df_actividades,horas_paro)
+    st.dataframe(diag)
 
-    st.subheader("Cronograma optimizado")
+    if st.button("🚀 Ejecutar optimización"):
 
-    st.dataframe(cronograma)
+        st.info("Calculando cronograma...")
 
-    if not cronograma.empty:
+        cronograma=optimizar_asignacion(df_actividades,horas_paro)
 
-        fig=px.timeline(
-            cronograma,
-            x_start="Hora inicio",
-            x_end="Hora fin",
-            y="Técnico",
-            color="Especialidad",
-            text="Orden"
-        )
+        if cronograma.empty:
 
-        fig.update_yaxes(autorange="reversed")
+            st.error("No se pudo generar cronograma. Revisar diagnóstico.")
 
-        st.plotly_chart(fig,use_container_width=True)
+        else:
+
+            st.success("Cronograma generado")
+
+            st.dataframe(cronograma)
+
+            fig=px.timeline(
+                cronograma,
+                x_start="Inicio",
+                x_end="Fin",
+                y="Tecnico",
+                color="Especialidad",
+                text="Orden"
+            )
+
+            fig.update_yaxes(autorange="reversed")
+
+            st.plotly_chart(fig,use_container_width=True)
