@@ -1,5 +1,5 @@
 # =============================================================================
-# OPTIMIZADOR DE PARADA DE PLANTA CON DIAGNÓSTICO AUTOMÁTICO
+# OPTIMIZADOR DE PARADA DE PLANTA CON DIAGNÓSTICO REAL
 # =============================================================================
 
 import streamlit as st
@@ -88,7 +88,7 @@ def cargar_datos(archivo1,archivo2):
 
 
 # -----------------------------------------------------------------------------
-# DESCOMPONER ÓRDENES
+# DESCOMPONER ORDENES
 # -----------------------------------------------------------------------------
 
 def descomponer_ordenes(df):
@@ -141,7 +141,7 @@ def descomponer_ordenes(df):
 
 
 # -----------------------------------------------------------------------------
-# DIAGNÓSTICO
+# DIAGNOSTICO
 # -----------------------------------------------------------------------------
 
 def diagnostico(df_actividades,horas_paro):
@@ -163,7 +163,7 @@ def diagnostico(df_actividades,horas_paro):
             "Especialidad":esp,
             "Horas requeridas":total,
             "Actividad más larga":max_act,
-            "Capacidad por técnico":capacidad,
+            "Capacidad técnico":capacidad,
             "Técnicos necesarios":tecnicos
         })
 
@@ -171,7 +171,7 @@ def diagnostico(df_actividades,horas_paro):
 
 
 # -----------------------------------------------------------------------------
-# OPTIMIZADOR CP-SAT
+# OPTIMIZADOR
 # -----------------------------------------------------------------------------
 
 def optimizar(df_actividades,horas_paro):
@@ -180,8 +180,6 @@ def optimizar(df_actividades,horas_paro):
 
     dias_paro = ceil(horas_paro/24)
     capacidad = dias_paro*8
-
-    centros = df_actividades["centro"].unique()
 
     tecnicos={}
 
@@ -210,9 +208,7 @@ def optimizar(df_actividades,horas_paro):
             end=model.NewIntVar(0,horas_paro,f"e_{i}_{t}")
             assigned=model.NewBoolVar(f"a_{i}_{t}")
 
-            interval=model.NewOptionalIntervalVar(
-                start,dur,end,assigned,f"int_{i}_{t}"
-            )
+            interval=model.NewOptionalIntervalVar(start,dur,end,assigned,f"int_{i}_{t}")
 
             intervalos[(i,t)]=interval
             asignaciones[(i,t)]=(start,end,assigned)
@@ -222,9 +218,7 @@ def optimizar(df_actividades,horas_paro):
         c=row["centro"]
         esp=row["especialidad"]
 
-        model.AddBoolOr([
-            asignaciones[(i,t)][2] for t in tecnicos[c][esp]
-        ])
+        model.AddBoolOr([asignaciones[(i,t)][2] for t in tecnicos[c][esp]])
 
     for c in tecnicos:
 
@@ -249,10 +243,6 @@ def optimizar(df_actividades,horas_paro):
 
     status=solver.Solve(model)
 
-    # -------------------------------------------------------------
-    # SI NO HAY SOLUCIÓN → MOSTRAR DIAGNÓSTICO
-    # -------------------------------------------------------------
-
     if status not in [cp_model.OPTIMAL,cp_model.FEASIBLE]:
 
         st.error("❌ No se pudo generar un cronograma")
@@ -263,18 +253,7 @@ def optimizar(df_actividades,horas_paro):
 
         st.dataframe(df_diag)
 
-        st.warning(
-            "Esto ocurre normalmente cuando:\n"
-            "- Las horas totales exceden la capacidad disponible\n"
-            "- Una actividad dura más que el paro\n"
-            "- Se necesitan más técnicos"
-        )
-
-        return pd.DataFrame()
-
-    # -------------------------------------------------------------
-    # CONSTRUIR CRONOGRAMA
-    # -------------------------------------------------------------
+        st.stop()
 
     cronograma=[]
 
@@ -317,21 +296,19 @@ if archivo1 and archivo2:
 
         cronograma=optimizar(df_actividades,horas_paro)
 
-        if not cronograma.empty:
+        st.success("Cronograma generado")
 
-            st.success("Cronograma generado")
+        st.dataframe(cronograma)
 
-            st.dataframe(cronograma)
+        fig=px.timeline(
+            cronograma,
+            x_start="Inicio",
+            x_end="Fin",
+            y="Tecnico",
+            color="Especialidad",
+            text="Orden"
+        )
 
-            fig=px.timeline(
-                cronograma,
-                x_start="Inicio",
-                x_end="Fin",
-                y="Tecnico",
-                color="Especialidad",
-                text="Orden"
-            )
+        fig.update_yaxes(autorange="reversed")
 
-            fig.update_yaxes(autorange="reversed")
-
-            st.plotly_chart(fig,use_container_width=True)
+        st.plotly_chart(fig,use_container_width=True)
