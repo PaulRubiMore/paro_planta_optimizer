@@ -1,282 +1,130 @@
-# =============================================================================
-# OPTIMIZADOR PARADA DE PLANTA + DIAGNOSTICO REAL
-# =============================================================================
-
-import streamlit as st
-import pandas as pd
-from datetime import datetime, timedelta
-from math import ceil
-from ortools.sat.python import cp_model
-import plotly.express as px
-
-
-st.set_page_config(page_title="Optimización Parada Planta", layout="wide")
-
-st.title("Optimización Parada de Planta")
-
-
-# -----------------------------------------------------------------------------
-# INPUTS
-# -----------------------------------------------------------------------------
-
-horas_paro = st.sidebar.number_input("Duración paro (horas)",1,500,36)
-
-fecha_inicio = st.sidebar.date_input("Fecha inicio")
-hora_inicio = st.sidebar.time_input("Hora inicio")
-
-inicio_parada = datetime.combine(fecha_inicio,hora_inicio)
-
-archivo1 = st.sidebar.file_uploader("Archivo OT",type=["xlsx"])
-archivo2 = st.sidebar.file_uploader("Archivo actividades",type=["xlsx"])
-
-
-# -----------------------------------------------------------------------------
-# LIMPIAR COLUMNAS
-# -----------------------------------------------------------------------------
-
-def limpiar(df):
-
-    df.columns = df.columns.str.strip()
-    df.columns = df.columns.str.replace("\n"," ",regex=True)
-
-    return df
-
-
-# -----------------------------------------------------------------------------
-# CARGA
-# -----------------------------------------------------------------------------
-
-def cargar_datos(a1,a2):
-
-    df1 = pd.read_excel(a1)
-    df2 = pd.read_excel(a2)
-
-    df1 = limpiar(df1)
-    df2 = limpiar(df2)
-
-    for c in df1.columns:
-        if "TIEMPO" in c.upper():
-            df1 = df1.rename(columns={c:"TIEMPO"})
-
-    df1 = df1[[
-        "Centro planificación",
-        "Actividades",
-        "Orden",
-        "TIEMPO",
-        "ESPECIALIDAD",
-        "CRITICIDAD"
-    ]]
-
-    df = df1.rename(columns={
-        "Centro planificación":"centro",
-        "Actividades":"actividad",
-        "Orden":"orden",
-        "TIEMPO":"duracion",
-        "ESPECIALIDAD":"especialidad",
-        "CRITICIDAD":"criticidad"
-    })
-
-    df["duracion"] = df["duracion"].fillna(1)
-
-    return df
-
-
-# -----------------------------------------------------------------------------
-# DESCOMPONER
-# -----------------------------------------------------------------------------
-
-def descomponer(df):
-
-    acts=[]
-
-    for _,r in df.iterrows():
-
-        especs = str(r["especialidad"]).replace("/",",").split(",")
-
-        for e in especs:
-
-            acts.append({
-                "orden":r["orden"],
-                "actividad":r["actividad"],
-                "centro":r["centro"],
-                "especialidad":e.strip().upper(),
-                "duracion":int(r["duracion"])
-            })
-
-    return pd.DataFrame(acts)
-
-
-# -----------------------------------------------------------------------------
-# DIAGNOSTICO
-# -----------------------------------------------------------------------------
-
-def diagnostico(df,horas):
-
-    dias = ceil(horas/24)
-    cap = dias*8
-
-    rep=[]
-
-    for (c,e),g in df.groupby(["centro","especialidad"]):
-
-        total = g["duracion"].sum()
-        max_act = g["duracion"].max()
-
-        tecnicos = ceil(total/cap)
-
-        rep.append({
-            "Centro":c,
-            "Especialidad":e,
-            "Horas totales":total,
-            "Actividad más larga":max_act,
-            "Capacidad técnico":cap,
-            "Técnicos necesarios":tecnicos
-        })
-
-    return pd.DataFrame(rep)
-
-
-# -----------------------------------------------------------------------------
-# OPTIMIZADOR
-# -----------------------------------------------------------------------------
-
-def optimizar(df,horas):
-
+# -------------------------------------------------------------------------
+# Paso 5-7: Optimización con CP-SAT
+# -------------------------------------------------------------------------
+def optimizar_asignacion(df_actividades, horas_paro):
     model = cp_model.CpModel()
 
-    tecnicos={}
+    # Definir técnicos disponibles por centro y especialidad
+    centros = df_actividades['centro'].unique()
+    especialidades = ['MECANICA','ELECTRICA','INSTRUMENTACION']
 
-    capacidad = ceil(horas/24)*8
+    # Suponemos 2 técnicos por especialidad y centro como ejemplo
+    tecnicos = {}
+    for c in centros:
+        tecnicos[c] = {}
+        for e in especialidades:
+            # T1 y T2 por cada especialidad
+            tecnicos[c][e] = [f"{c}_{e}_T1", f"{c}_{e}_T2"]
 
-    for (c,e),g in df.groupby(["centro","especialidad"]):
+    # Calcular capacidad por técnico
+    dias_paro = ceil(horas_paro/24)
+    capacidad_tecnico = dias_paro*8  # horas totales por técnico
 
-        total = g["duracion"].sum()
+    # Crear variables de inicio y asignación de técnicos
+    variables = {}
+    for idx, row in df_actividades.iterrows():
+        act_id = f"{row['orden']}_{row['especialidad']}"
+        dur = row['duracion_h']
+        centro = row['centro']
+        esp = row['especialidad']
+        # Variables de asignación: técnico y hora de inicio
+        for t in tecnicos[centro][esp]:
+            var = model.NewIntVar(0, horas_paro-dur, f'start_{act_id}_{t}')
+            assigned = model.NewBoolVar(f'assigned_{act_id}_{t}')
+            variables[(act_id,t)] = {'start':var, 'assigned':assigned, 'dur':dur}
 
-        n = max(1,ceil(total/capacidad))
+    # Restricción: cada actividad debe ser cubierta por al menos un técnico
+    for idx, row in df_actividades.iterrows():
+        act_id = f"{row['orden']}_{row['especialidad']}"
+        centro = row['centro']
+        esp = row['especialidad']
+        model.AddBoolOr([variables[(act_id,t)]['assigned'] for t in tecnicos[centro][esp]])
 
-        tecnicos.setdefault(c,{})
-        tecnicos[c][e] = [f"T{i}" for i in range(n)]
+    # Restricción: un técnico no puede trabajar en dos actividades simultáneamente
+    for c in centros:
+        for e in especialidades:
+            techs = tecnicos[c][e]
+            for t in techs:
+                acts = [variables[(f"{r['orden']}_{r['especialidad']}",t)] 
+                        for _,r in df_actividades[df_actividades['especialidad']==e].iterrows() 
+                        if r['centro']==c and (f"{r['orden']}_{r['especialidad']}",t) in variables]
+                for i in range(len(acts)):
+                    for j in range(i+1,len(acts)):
+                        # No solapamiento: end_i <= start_j OR end_j <= start_i
+                        end_i = acts[i]['start'] + acts[i]['dur']
+                        end_j = acts[j]['start'] + acts[j]['dur']
+                        model.AddBoolOr([
+                            acts[i]['start'] + acts[i]['dur'] <= acts[j]['start'],
+                            acts[j]['start'] + acts[j]['dur'] <= acts[i]['start']
+                        ])
 
-    asignaciones={}
-    intervalos={}
-
-    for i,r in df.iterrows():
-
-        c=r["centro"]
-        e=r["especialidad"]
-        dur=int(r["duracion"])
-
-        lista=[]
-
-        for t in tecnicos[c][e]:
-
-            s=model.NewIntVar(0,horas,f"s{i}{t}")
-            e2=model.NewIntVar(0,horas,f"e{i}{t}")
-            a=model.NewBoolVar(f"a{i}{t}")
-
-            model.Add(e2 == s + dur)
-
-            interval=model.NewOptionalIntervalVar(s,dur,e2,a,f"int{i}{t}")
-
-            asignaciones[(i,t)] = (s,e2,a)
-            intervalos[(i,t)] = interval
-
-            lista.append(a)
-
-        model.Add(sum(lista) == 1)
-
-    for c in tecnicos:
-
-        for e in tecnicos[c]:
-
+    # Restricción: capacidad máxima del técnico
+    for c in centros:
+        for e in especialidades:
             for t in tecnicos[c][e]:
+                asignaciones = [variables[(act_id,t)]['assigned']*variables[(act_id,t)]['dur'] 
+                                for (act_id,te) in variables if te==t]
+                if asignaciones:
+                    model.Add(sum(asignaciones) <= capacidad_tecnico)
 
-                ints=[]
+    # Objetivo: minimizar hora de finalización total y priorizar criticidad
+    # Asignamos ponderación: Alta=1000, Media=100, Baja=10
+    criticidad_peso = {'ALTA':1000,'MEDIA':100,'BAJA':10}
+    makespan_vars = []
+    for (act_id,t), v in variables.items():
+        # penalización por criticidad
+        crit = df_actividades[df_actividades['orden']==int(act_id.split('_')[0])]['criticidad'].values[0]
+        peso = criticidad_peso.get(crit.upper(),10)
+        makespan_vars.append(v['start'] + v['dur']*peso)
 
-                for i,r in df.iterrows():
+    model.Minimize(sum(makespan_vars))
 
-                    if r["centro"]==c and r["especialidad"]==e:
-
-                        if (i,t) in intervalos:
-
-                            ints.append(intervalos[(i,t)])
-
-                if len(ints)>1:
-
-                    model.AddNoOverlap(ints)
-
-    solver=cp_model.CpSolver()
-
-    solver.parameters.max_time_in_seconds = 20
-
+    # Resolver
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 60  # 1 minuto
     status = solver.Solve(model)
 
-    if status not in [cp_model.OPTIMAL,cp_model.FEASIBLE]:
-
-        return None
-
-    cronograma=[]
-
-    for (i,t),(s,e,a) in asignaciones.items():
-
-        if solver.Value(a)==1:
-
-            r=df.loc[i]
-
-            cronograma.append({
-
-                "Orden":r["orden"],
-                "Actividad":r["actividad"],
-                "Centro":r["centro"],
-                "Especialidad":r["especialidad"],
-                "Tecnico":t,
-                "Inicio":inicio_parada + timedelta(hours=solver.Value(s)),
-                "Fin":inicio_parada + timedelta(hours=solver.Value(e))
-            })
+    # Construir cronograma final
+    cronograma = []
+    if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
+        for (act_id,t), v in variables.items():
+            if solver.Value(v['assigned']):
+                start = solver.Value(v['start'])
+                end = start + v['dur']
+                orden, esp = act_id.split('_')
+                row = df_actividades[df_actividades['orden']==int(orden)].iloc[0]
+                cronograma.append({
+                    'Orden': orden,
+                    'Actividad': row['actividad'],
+                    'Centro': row['centro'],
+                    'Especialidad': esp,
+                    'Técnico': t,
+                    'Hora inicio': inicio_parada + timedelta(hours=start),
+                    'Hora fin': inicio_parada + timedelta(hours=end),
+                    'Criticidad': row['criticidad'],
+                    'Duración': v['dur']
+                })
+    else:
+        st.warning("No se encontró solución factible en el tiempo límite")
 
     return pd.DataFrame(cronograma)
 
-
-# -----------------------------------------------------------------------------
-# APP
-# -----------------------------------------------------------------------------
-
+# -------------------------------------------------------------------------
+# EJECUCIÓN APP
+# -------------------------------------------------------------------------
 if archivo1 and archivo2:
+    df = cargar_datos(archivo1, archivo2)
+    df_actividades = descomponer_ordenes(df)
+    st.subheader("Actividades descompuestas")
+    st.dataframe(df_actividades)
 
-    df = cargar_datos(archivo1,archivo2)
+    df_cronograma = optimizar_asignacion(df_actividades, horas_paro)
+    st.subheader("Cronograma optimizado")
+    st.dataframe(df_cronograma)
 
-    acts = descomponer(df)
-
-    st.write("Actividades generadas:",len(acts))
-
-    if st.button("Ejecutar optimización"):
-
-        cron = optimizar(acts,horas_paro)
-
-        if cron is None:
-
-            st.error("No existe solución factible")
-
-            st.subheader("Diagnóstico")
-
-            diag = diagnostico(acts,horas_paro)
-
-            st.dataframe(diag)
-
-        else:
-
-            st.success("Cronograma generado")
-
-            st.dataframe(cron)
-
-            fig = px.timeline(
-                cron,
-                x_start="Inicio",
-                x_end="Fin",
-                y="Tecnico",
-                color="Especialidad"
-            )
-
-            fig.update_yaxes(autorange="reversed")
-
-            st.plotly_chart(fig,use_container_width=True)
+    # Gráfica Gantt
+    if not df_cronograma.empty:
+        fig = px.timeline(df_cronograma, x_start="Hora inicio", x_end="Hora fin",
+                          y="Técnico", color="Especialidad", text="Actividad")
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig, use_container_width=True)
