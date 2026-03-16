@@ -1,18 +1,15 @@
-# =============================================================================
-# OPTIMIZADOR DE PARADA DE PLANTA (CORREGIDO)
-# =============================================================================
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from math import ceil
 from ortools.sat.python import cp_model
 
 st.set_page_config(page_title="Optimizador Paro Planta", layout="wide")
 st.title("Optimización Parada de Planta")
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 # PARAMETROS PARO
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 
 st.sidebar.header("Parametros paro")
 
@@ -31,17 +28,17 @@ inicio_paro = datetime.combine(fecha_inicio, hora_inicio)
 archivo1 = st.sidebar.file_uploader("Archivo actividades SAP", type=["xlsx"])
 archivo2 = st.sidebar.file_uploader("Archivo zonas", type=["xlsx"])
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 # LIMPIAR COLUMNAS
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 
 def limpiar_columnas(df):
     df.columns = df.columns.str.strip().str.replace("\n"," ",regex=True)
     return df
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 # CARGAR DATOS
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 
 def cargar_datos(archivo1, archivo2):
 
@@ -68,9 +65,6 @@ def cargar_datos(archivo1, archivo2):
 
     df2 = df2[["Actividades","Zona","Sector"]]
 
-    df1 = df1.drop_duplicates(subset=["Orden"])
-    df2 = df2.drop_duplicates(subset=["Actividades"])
-
     df = df1.merge(df2,on="Actividades",how="left")
 
     df = df.rename(columns={
@@ -86,9 +80,9 @@ def cargar_datos(archivo1, archivo2):
 
     return df
 
-# -----------------------------------------------------------------------------
-# DESCOMPOSICION POR ESPECIALIDAD
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# DESCOMPONER POR ESPECIALIDAD
+# ---------------------------------------------------------
 
 def descomponer_ordenes(df):
 
@@ -121,9 +115,9 @@ def descomponer_ordenes(df):
 
     return pd.DataFrame(actividades)
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 # FRAGMENTAR BLOQUES 8H
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 
 def fragmentar_actividades(df):
 
@@ -152,90 +146,111 @@ def fragmentar_actividades(df):
 
     return pd.DataFrame(fragmentos)
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 # OPTIMIZADOR
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 
 def optimizar_paro(df_fragmentado, horas_paro):
 
     model = cp_model.CpModel()
 
-    from math import ceil
-
     dias_paro = ceil(horas_paro / 24)
     capacidad_tecnico = dias_paro * 8
 
-    max_tecnicos = 100
-    tareas = len(df_fragmentado)
+    centros = df_fragmentado["centro"].unique()
+
+    max_tecnicos_centro = 100
+
+    tecnicos_por_centro = {}
+
+    for c in centros:
+        tecnicos_por_centro[c] = [f"{c}_T{i+1}" for i in range(max_tecnicos_centro)]
 
     asignacion = {}
 
+    tareas = len(df_fragmentado)
+
     for i in range(tareas):
-        for t in range(max_tecnicos):
+
+        centro = df_fragmentado.iloc[i]["centro"]
+
+        for t in tecnicos_por_centro[centro]:
+
             asignacion[(i,t)] = model.NewBoolVar(f"a_{i}_{t}")
 
-    # cada tarea tiene tecnico
+    # cada actividad tiene tecnico
 
     for i in range(tareas):
-        model.Add(sum(asignacion[(i,t)] for t in range(max_tecnicos)) == 1)
+
+        centro = df_fragmentado.iloc[i]["centro"]
+
+        model.Add(
+            sum(asignacion[(i,t)] for t in tecnicos_por_centro[centro]) == 1
+        )
 
     # capacidad tecnico
 
-    for t in range(max_tecnicos):
+    for centro in centros:
 
-        model.Add(
-            sum(
-                asignacion[(i,t)] * int(df_fragmentado.iloc[i]["duracion"])
-                for i in range(tareas)
-            ) <= capacidad_tecnico
-        )
+        for t in tecnicos_por_centro[centro]:
 
-    tecnico_usado = []
+            model.Add(
+                sum(
+                    asignacion[(i,t)] * int(df_fragmentado.iloc[i]["duracion"])
+                    for i in range(tareas)
+                    if (i,t) in asignacion
+                ) <= capacidad_tecnico
+            )
 
-    for t in range(max_tecnicos):
+    # minimizar tecnicos
 
-        usado = model.NewBoolVar(f"tec_usado_{t}")
+    tecnico_usado=[]
 
-        model.AddMaxEquality(
-            usado,
-            [asignacion[(i,t)] for i in range(tareas)]
-        )
+    for centro in centros:
 
-        tecnico_usado.append(usado)
+        for t in tecnicos_por_centro[centro]:
+
+            usado=model.NewBoolVar(f"usado_{t}")
+
+            model.AddMaxEquality(
+                usado,
+                [asignacion[(i,t)] for i in range(tareas) if (i,t) in asignacion]
+            )
+
+            tecnico_usado.append(usado)
 
     model.Minimize(sum(tecnico_usado))
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 30
+    solver=cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds=60
 
-    status = solver.Solve(model)
+    status=solver.Solve(model)
 
-    resultado = []
+    resultado=[]
 
     if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
 
-        for i in range(tareas):
-            for t in range(max_tecnicos):
+        for (i,t),var in asignacion.items():
 
-                if solver.Value(asignacion[(i,t)]) == 1:
+            if solver.Value(var)==1:
 
-                    row = df_fragmentado.iloc[i]
+                row=df_fragmentado.iloc[i]
 
-                    resultado.append({
-                        "Tecnico": f"T{t+1}",
-                        "Orden": row["orden"],
-                        "Actividad": row["actividad"],
-                        "Centro": row["centro"],
-                        "Especialidad": row["especialidad"],
-                        "Bloque": row["bloque"],
-                        "Duracion": row["duracion"]
-                    })
+                resultado.append({
+                    "Tecnico":t,
+                    "Centro":row["centro"],
+                    "Orden":row["orden"],
+                    "Actividad":row["actividad"],
+                    "Especialidad":row["especialidad"],
+                    "Bloque":row["bloque"],
+                    "Duracion":row["duracion"]
+                })
 
     return pd.DataFrame(resultado)
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 # EJECUCION
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
 
 if archivo1 and archivo2:
 
@@ -258,6 +273,12 @@ if archivo1 and archivo2:
 
     df_opt = optimizar_paro(df_frag, horas_paro)
 
-    st.dataframe(df_opt)
+    if not df_opt.empty:
 
-    st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
+        st.dataframe(df_opt)
+
+        st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
+
+    else:
+
+        st.error("El optimizador no encontró solución con las restricciones actuales")
