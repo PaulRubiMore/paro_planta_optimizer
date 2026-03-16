@@ -5,7 +5,6 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from math import ceil
 from ortools.sat.python import cp_model
 
 # -------------------------------------------------------------------------
@@ -37,14 +36,12 @@ inicio_paro = datetime.combine(fecha_inicio_paro, hora_inicio_paro)
 archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo", type=["xlsx"])
 archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades", type=["xlsx"])
 
-
 # -------------------------------------------------------------------------
-# LIMPIEZA COLUMNAS
+# LIMPIAR COLUMNAS
 # -------------------------------------------------------------------------
 def limpiar_columnas(df):
     df.columns = df.columns.str.strip().str.replace("\n"," ",regex=True)
     return df
-
 
 # -------------------------------------------------------------------------
 # CARGAR DATOS
@@ -94,13 +91,12 @@ def cargar_datos(archivo1, archivo2):
 
     return df
 
-
 # -------------------------------------------------------------------------
 # DESCOMPOSICIÓN POR ESPECIALIDAD
 # -------------------------------------------------------------------------
 def descomponer_ordenes(df):
 
-    actividades=[]
+    actividades = []
 
     for _,row in df.iterrows():
 
@@ -133,18 +129,15 @@ def descomponer_ordenes(df):
             dur=round(total*pct)
 
             actividades.append({
-
                 "orden":row["orden"],
                 "actividad":row["actividad"],
                 "centro":row["centro"],
                 "especialidad":esp,
                 "criticidad":row["criticidad"],
                 "duracion_h":dur
-
             })
 
     return pd.DataFrame(actividades)
-
 
 # -------------------------------------------------------------------------
 # FRAGMENTAR EN BLOQUES DE 8 HORAS
@@ -163,14 +156,12 @@ def fragmentar_actividades(df):
             dur=min(8,horas)
 
             fragmentos.append({
-
                 "orden":row["orden"],
                 "actividad":row["actividad"],
                 "centro":row["centro"],
                 "especialidad":row["especialidad"],
                 "duracion":dur,
                 "bloque":bloque
-
             })
 
             horas-=dur
@@ -178,17 +169,15 @@ def fragmentar_actividades(df):
 
     return pd.DataFrame(fragmentos)
 
-
 # -------------------------------------------------------------------------
-# OPTIMIZACIÓN CON ORTOOLS
+# OPTIMIZACIÓN ORTOOLS
 # -------------------------------------------------------------------------
-def optimizar_paro(df_fragmentado,horas_paro):
+def optimizar_paro(df_fragmentado, horas_paro):
 
-    model=cp_model.CpModel()
+    model = cp_model.CpModel()
 
-    max_tecnicos=len(df_fragmentado)
-
-    tecnicos=[f"T{i}" for i in range(max_tecnicos)]
+    max_tecnicos = min(100, len(df_fragmentado))
+    tecnicos = [f"T{i+1}" for i in range(max_tecnicos)]
 
     tareas={}
     intervalos={t:[] for t in tecnicos}
@@ -201,25 +190,23 @@ def optimizar_paro(df_fragmentado,horas_paro):
 
             start=model.NewIntVar(0,horas_paro,f"start_{i}_{t}")
             end=model.NewIntVar(0,horas_paro,f"end_{i}_{t}")
-
             asignado=model.NewBoolVar(f"asig_{i}_{t}")
 
-            intervalo=model.NewOptionalIntervalVar(
-                start,dur,end,asignado,f"interval_{i}_{t}"
-            )
+            intervalo=model.NewOptionalIntervalVar(start,dur,end,asignado,f"interval_{i}_{t}")
 
             tareas[(i,t)]={"start":start,"end":end,"dur":dur,"asig":asignado}
 
             intervalos[t].append(intervalo)
 
+    # cada bloque tiene 1 técnico
     for i in df_fragmentado.index:
-
         model.AddExactlyOne(tareas[(i,t)]["asig"] for t in tecnicos)
 
+    # no solapamiento
     for t in tecnicos:
-
         model.AddNoOverlap(intervalos[t])
 
+    # variable técnico usado
     tecnico_usado=[]
 
     for t in tecnicos:
@@ -233,6 +220,7 @@ def optimizar_paro(df_fragmentado,horas_paro):
 
         tecnico_usado.append(usado)
 
+    # minimizar técnicos
     model.Minimize(sum(tecnico_usado))
 
     solver=cp_model.CpSolver()
@@ -251,7 +239,6 @@ def optimizar_paro(df_fragmentado,horas_paro):
                 row=df_fragmentado.loc[i]
 
                 resultado.append({
-
                     "Tecnico":t,
                     "Orden":row["orden"],
                     "Actividad":row["actividad"],
@@ -261,11 +248,9 @@ def optimizar_paro(df_fragmentado,horas_paro):
                     "Inicio_h":solver.Value(v["start"]),
                     "Fin_h":solver.Value(v["end"]),
                     "Duracion":v["dur"]
-
                 })
 
     return pd.DataFrame(resultado)
-
 
 # -------------------------------------------------------------------------
 # EJECUCIÓN
@@ -273,7 +258,6 @@ def optimizar_paro(df_fragmentado,horas_paro):
 if archivo1 and archivo2:
 
     st.subheader("Parámetros del paro")
-
     st.write("Duración paro:",horas_paro)
     st.write("Inicio paro:",inicio_paro)
 
@@ -291,10 +275,6 @@ if archivo1 and archivo2:
 
     st.subheader("Actividades fragmentadas (bloques 8h)")
     st.dataframe(df_fragmentado)
-
-    # ---------------------------------------------------
-    # OPTIMIZACIÓN
-    # ---------------------------------------------------
 
     st.subheader("Optimización del paro")
 
