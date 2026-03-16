@@ -1,4 +1,3 @@
-```python
 # =============================================================================
 # DESCOMPOSICIÓN DE ÓRDENES DE MANTENIMIENTO
 # =============================================================================
@@ -162,4 +161,3 @@ if archivo1 and archivo2:
     st.dataframe(df_actividades)
 
     st.write("Total actividades generadas:", len(df_actividades))
-```
