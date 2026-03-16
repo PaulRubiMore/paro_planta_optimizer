@@ -1,5 +1,5 @@
 # =============================================================================
-# OPTIMIZADOR DE PARADA DE PLANTA CON DIAGNÓSTICO REAL
+# OPTIMIZADOR PARADA DE PLANTA + DIAGNOSTICO REAL
 # =============================================================================
 
 import streamlit as st
@@ -10,305 +10,273 @@ from ortools.sat.python import cp_model
 import plotly.express as px
 
 
+st.set_page_config(page_title="Optimización Parada Planta", layout="wide")
+
+st.title("Optimización Parada de Planta")
+
+
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN
+# INPUTS
 # -----------------------------------------------------------------------------
 
-st.set_page_config(page_title="Optimización Parada Planta", page_icon="🏭", layout="wide")
+horas_paro = st.sidebar.number_input("Duración paro (horas)",1,500,36)
 
-st.title("🏭 Optimización de Parada de Planta")
-
-horas_paro = st.sidebar.number_input("Duración del paro (horas)",1,500,36)
-
-fecha_inicio = st.sidebar.date_input("Fecha inicio del paro")
-hora_inicio = st.sidebar.time_input("Hora inicio del paro")
+fecha_inicio = st.sidebar.date_input("Fecha inicio")
+hora_inicio = st.sidebar.time_input("Hora inicio")
 
 inicio_parada = datetime.combine(fecha_inicio,hora_inicio)
 
-archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo",type=["xlsx"])
-archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades",type=["xlsx"])
+archivo1 = st.sidebar.file_uploader("Archivo OT",type=["xlsx"])
+archivo2 = st.sidebar.file_uploader("Archivo actividades",type=["xlsx"])
 
 
 # -----------------------------------------------------------------------------
 # LIMPIAR COLUMNAS
 # -----------------------------------------------------------------------------
 
-def limpiar_columnas(df):
+def limpiar(df):
 
     df.columns = df.columns.str.strip()
     df.columns = df.columns.str.replace("\n"," ",regex=True)
-    df.columns = df.columns.str.replace("  "," ")
 
     return df
 
 
 # -----------------------------------------------------------------------------
-# CARGAR DATOS
+# CARGA
 # -----------------------------------------------------------------------------
 
-def cargar_datos(archivo1,archivo2):
+def cargar_datos(a1,a2):
 
-    df1 = pd.read_excel(archivo1)
-    df2 = pd.read_excel(archivo2)
+    df1 = pd.read_excel(a1)
+    df2 = pd.read_excel(a2)
 
-    df1 = limpiar_columnas(df1)
-    df2 = limpiar_columnas(df2)
+    df1 = limpiar(df1)
+    df2 = limpiar(df2)
 
-    for col in df1.columns:
-        if "TIEMPO" in col.upper():
-            df1 = df1.rename(columns={col:"TIEMPO (Hrs)"})
+    for c in df1.columns:
+        if "TIEMPO" in c.upper():
+            df1 = df1.rename(columns={c:"TIEMPO"})
 
     df1 = df1[[
         "Centro planificación",
         "Actividades",
         "Orden",
-        "TIEMPO (Hrs)",
-        "ESTADO",
+        "TIEMPO",
         "ESPECIALIDAD",
-        "EJECUTOR",
         "CRITICIDAD"
     ]]
 
-    df2 = df2[["Actividades","Zona","Sector"]]
-
-    df = df1.merge(df2,on="Actividades",how="left")
-
-    df = df.rename(columns={
-        "Orden":"orden",
+    df = df1.rename(columns={
+        "Centro planificación":"centro",
         "Actividades":"actividad",
-        "TIEMPO (Hrs)":"duracion_h",
+        "Orden":"orden",
+        "TIEMPO":"duracion",
         "ESPECIALIDAD":"especialidad",
-        "CRITICIDAD":"criticidad",
-        "Centro planificación":"centro"
+        "CRITICIDAD":"criticidad"
     })
 
-    df["duracion_h"] = df["duracion_h"].fillna(1)
+    df["duracion"] = df["duracion"].fillna(1)
 
     return df
 
 
 # -----------------------------------------------------------------------------
-# DESCOMPONER ORDENES
+# DESCOMPONER
 # -----------------------------------------------------------------------------
 
-def descomponer_ordenes(df):
+def descomponer(df):
 
-    actividades=[]
+    acts=[]
 
-    for _,row in df.iterrows():
+    for _,r in df.iterrows():
 
-        especs = str(row["especialidad"]).replace("/",",").split(",")
-        especs = [e.strip().upper() for e in especs]
+        especs = str(r["especialidad"]).replace("/",",").split(",")
 
-        total = row["duracion_h"]
+        for e in especs:
 
-        if len(especs)==3:
-            porcentajes=[0.5,0.3,0.2]
-
-        elif len(especs)==2:
-
-            if "MECANICA" in especs and "ELECTRICA" in especs:
-                porcentajes=[0.65,0.35]
-
-            elif "ELECTRICA" in especs and "INSTRUMENTACION" in especs:
-                porcentajes=[0.6,0.4]
-
-            else:
-                porcentajes=[0.5,0.5]
-
-        else:
-            porcentajes=[1]
-
-        for esp,pct in zip(especs,porcentajes):
-
-            dur = total*pct
-
-            if dur-int(dur)<1.5:
-                dur=int(dur)
-            else:
-                dur=int(dur)+1
-
-            actividades.append({
-                "orden":row["orden"],
-                "actividad":row["actividad"],
-                "centro":row["centro"],
-                "especialidad":esp,
-                "criticidad":str(row["criticidad"]).upper(),
-                "duracion_h":dur
+            acts.append({
+                "orden":r["orden"],
+                "actividad":r["actividad"],
+                "centro":r["centro"],
+                "especialidad":e.strip().upper(),
+                "duracion":int(r["duracion"])
             })
 
-    return pd.DataFrame(actividades)
+    return pd.DataFrame(acts)
 
 
 # -----------------------------------------------------------------------------
 # DIAGNOSTICO
 # -----------------------------------------------------------------------------
 
-def diagnostico(df_actividades,horas_paro):
+def diagnostico(df,horas):
 
-    dias_paro = ceil(horas_paro/24)
-    capacidad = dias_paro*8
+    dias = ceil(horas/24)
+    cap = dias*8
 
-    reporte=[]
+    rep=[]
 
-    for (centro,esp),grupo in df_actividades.groupby(["centro","especialidad"]):
+    for (c,e),g in df.groupby(["centro","especialidad"]):
 
-        total = grupo["duracion_h"].sum()
-        max_act = grupo["duracion_h"].max()
+        total = g["duracion"].sum()
+        max_act = g["duracion"].max()
 
-        tecnicos = ceil(total/capacidad)
+        tecnicos = ceil(total/cap)
 
-        reporte.append({
-            "Centro":centro,
-            "Especialidad":esp,
-            "Horas requeridas":total,
+        rep.append({
+            "Centro":c,
+            "Especialidad":e,
+            "Horas totales":total,
             "Actividad más larga":max_act,
-            "Capacidad técnico":capacidad,
+            "Capacidad técnico":cap,
             "Técnicos necesarios":tecnicos
         })
 
-    return pd.DataFrame(reporte)
+    return pd.DataFrame(rep)
 
 
 # -----------------------------------------------------------------------------
 # OPTIMIZADOR
 # -----------------------------------------------------------------------------
 
-def optimizar(df_actividades,horas_paro):
+def optimizar(df,horas):
 
     model = cp_model.CpModel()
 
-    dias_paro = ceil(horas_paro/24)
-    capacidad = dias_paro*8
-
     tecnicos={}
 
-    for (c,esp),grupo in df_actividades.groupby(["centro","especialidad"]):
+    capacidad = ceil(horas/24)*8
 
-        total=grupo["duracion_h"].sum()
+    for (c,e),g in df.groupby(["centro","especialidad"]):
 
-        n=ceil(total/capacidad)
-        n=max(1,n)
+        total = g["duracion"].sum()
+
+        n = max(1,ceil(total/capacidad))
 
         tecnicos.setdefault(c,{})
-        tecnicos[c][esp]=[f"{c}_{esp}_T{i}" for i in range(n)]
+        tecnicos[c][e] = [f"T{i}" for i in range(n)]
 
-    intervalos={}
     asignaciones={}
+    intervalos={}
 
-    for i,row in df_actividades.iterrows():
+    for i,r in df.iterrows():
 
-        c=row["centro"]
-        esp=row["especialidad"]
-        dur=int(row["duracion_h"])
+        c=r["centro"]
+        e=r["especialidad"]
+        dur=int(r["duracion"])
 
-        for t in tecnicos[c][esp]:
+        lista=[]
 
-            start=model.NewIntVar(0,horas_paro,f"s_{i}_{t}")
-            end=model.NewIntVar(0,horas_paro,f"e_{i}_{t}")
-            assigned=model.NewBoolVar(f"a_{i}_{t}")
+        for t in tecnicos[c][e]:
 
-            interval=model.NewOptionalIntervalVar(start,dur,end,assigned,f"int_{i}_{t}")
+            s=model.NewIntVar(0,horas,f"s{i}{t}")
+            e2=model.NewIntVar(0,horas,f"e{i}{t}")
+            a=model.NewBoolVar(f"a{i}{t}")
 
-            intervalos[(i,t)]=interval
-            asignaciones[(i,t)]=(start,end,assigned)
+            model.Add(e2 == s + dur)
 
-    for i,row in df_actividades.iterrows():
+            interval=model.NewOptionalIntervalVar(s,dur,e2,a,f"int{i}{t}")
 
-        c=row["centro"]
-        esp=row["especialidad"]
+            asignaciones[(i,t)] = (s,e2,a)
+            intervalos[(i,t)] = interval
 
-        model.AddBoolOr([asignaciones[(i,t)][2] for t in tecnicos[c][esp]])
+            lista.append(a)
+
+        model.Add(sum(lista) == 1)
 
     for c in tecnicos:
 
-        for esp in tecnicos[c]:
+        for e in tecnicos[c]:
 
-            for t in tecnicos[c][esp]:
+            for t in tecnicos[c][e]:
 
-                lista=[]
+                ints=[]
 
-                for i,row in df_actividades.iterrows():
+                for i,r in df.iterrows():
 
-                    if row["centro"]==c and row["especialidad"]==esp:
+                    if r["centro"]==c and r["especialidad"]==e:
 
                         if (i,t) in intervalos:
-                            lista.append(intervalos[(i,t)])
 
-                if len(lista)>1:
-                    model.AddNoOverlap(lista)
+                            ints.append(intervalos[(i,t)])
+
+                if len(ints)>1:
+
+                    model.AddNoOverlap(ints)
 
     solver=cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds=60
 
-    status=solver.Solve(model)
+    solver.parameters.max_time_in_seconds = 20
+
+    status = solver.Solve(model)
 
     if status not in [cp_model.OPTIMAL,cp_model.FEASIBLE]:
 
-        st.error("❌ No se pudo generar un cronograma")
-
-        st.subheader("🔎 Diagnóstico del problema")
-
-        df_diag = diagnostico(df_actividades,horas_paro)
-
-        st.dataframe(df_diag)
-
-        st.stop()
+        return None
 
     cronograma=[]
 
-    for (i,t),(start,end,assigned) in asignaciones.items():
+    for (i,t),(s,e,a) in asignaciones.items():
 
-        if solver.Value(assigned)==1:
+        if solver.Value(a)==1:
 
-            row=df_actividades.loc[i]
+            r=df.loc[i]
 
             cronograma.append({
 
-                "Orden":row["orden"],
-                "Actividad":row["actividad"],
-                "Centro":row["centro"],
-                "Especialidad":row["especialidad"],
+                "Orden":r["orden"],
+                "Actividad":r["actividad"],
+                "Centro":r["centro"],
+                "Especialidad":r["especialidad"],
                 "Tecnico":t,
-                "Inicio":inicio_parada+timedelta(hours=solver.Value(start)),
-                "Fin":inicio_parada+timedelta(hours=solver.Value(end))
+                "Inicio":inicio_parada + timedelta(hours=solver.Value(s)),
+                "Fin":inicio_parada + timedelta(hours=solver.Value(e))
             })
 
     return pd.DataFrame(cronograma)
 
 
 # -----------------------------------------------------------------------------
-# EJECUCIÓN
+# APP
 # -----------------------------------------------------------------------------
 
 if archivo1 and archivo2:
 
-    df=cargar_datos(archivo1,archivo2)
+    df = cargar_datos(archivo1,archivo2)
 
-    df_actividades=descomponer_ordenes(df)
+    acts = descomponer(df)
 
-    st.subheader("Actividades generadas")
-    st.write("Total actividades:",len(df_actividades))
+    st.write("Actividades generadas:",len(acts))
 
-    if st.button("🚀 Ejecutar optimización"):
+    if st.button("Ejecutar optimización"):
 
-        st.info("Calculando cronograma...")
+        cron = optimizar(acts,horas_paro)
 
-        cronograma=optimizar(df_actividades,horas_paro)
+        if cron is None:
 
-        st.success("Cronograma generado")
+            st.error("No existe solución factible")
 
-        st.dataframe(cronograma)
+            st.subheader("Diagnóstico")
 
-        fig=px.timeline(
-            cronograma,
-            x_start="Inicio",
-            x_end="Fin",
-            y="Tecnico",
-            color="Especialidad",
-            text="Orden"
-        )
+            diag = diagnostico(acts,horas_paro)
 
-        fig.update_yaxes(autorange="reversed")
+            st.dataframe(diag)
 
-        st.plotly_chart(fig,use_container_width=True)
+        else:
+
+            st.success("Cronograma generado")
+
+            st.dataframe(cron)
+
+            fig = px.timeline(
+                cron,
+                x_start="Inicio",
+                x_end="Fin",
+                y="Tecnico",
+                color="Especialidad"
+            )
+
+            fig.update_yaxes(autorange="reversed")
+
+            st.plotly_chart(fig,use_container_width=True)
