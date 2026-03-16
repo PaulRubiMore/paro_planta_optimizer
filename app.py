@@ -1,3 +1,4 @@
+```python
 # =============================================================================
 # DESCOMPOSICIÓN DE ÓRDENES DE MANTENIMIENTO
 # =============================================================================
@@ -142,7 +143,23 @@ if archivo1 and archivo2:
 
     df_actividades = descomponer_ordenes(df)
 
-    st.subheader("Actividades descompuestas por especialidad")
+    # -------------------------------------------------
+    # ORGANIZAR POR CRITICIDAD
+    # -------------------------------------------------
+    prioridad = {
+        "ALTA":1,
+        "MEDIA":2,
+        "BAJA":3
+    }
+
+    df_actividades["prioridad"] = df_actividades["criticidad"].map(prioridad)
+
+    df_actividades = df_actividades.sort_values(by="prioridad")
+
+    df_actividades = df_actividades.drop(columns="prioridad")
+
+    st.subheader("Actividades organizadas por criticidad")
     st.dataframe(df_actividades)
 
     st.write("Total actividades generadas:", len(df_actividades))
+```
