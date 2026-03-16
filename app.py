@@ -157,31 +157,30 @@ def optimizar_paro(df_fragmentado, horas_paro):
     dias_paro = ceil(horas_paro / 24)
     capacidad_tecnico = dias_paro * 8
 
-    centros = df_fragmentado["centro"].unique()
-    especialidades = df_fragmentado["especialidad"].unique()
-
     max_tecnicos = 100
+    tareas = len(df_fragmentado)
+
+    # combinaciones reales centro-especialidad
+    combos = df_fragmentado[["centro","especialidad"]].drop_duplicates()
 
     tecnicos = {}
 
-    # crear tecnicos por centro y especialidad
+    for _,row in combos.iterrows():
 
-    for c in centros:
-        for e in especialidades:
-            tecnicos[(c,e)] = [f"{c}_{e}_T{i+1}" for i in range(max_tecnicos)]
+        c = row["centro"]
+        e = row["especialidad"]
+
+        tecnicos[(c,e)] = [f"{c}_{e}_T{i+1}" for i in range(max_tecnicos)]
 
     asignacion = {}
 
-    tareas = len(df_fragmentado)
-
-    # variables decision
-
+    # crear variables solo compatibles
     for i in range(tareas):
 
-        centro = df_fragmentado.iloc[i]["centro"]
-        esp = df_fragmentado.iloc[i]["especialidad"]
+        c = df_fragmentado.iloc[i]["centro"]
+        e = df_fragmentado.iloc[i]["especialidad"]
 
-        for t in tecnicos[(centro,esp)]:
+        for t in tecnicos[(c,e)]:
 
             asignacion[(i,t)] = model.NewBoolVar(f"a_{i}_{t}")
 
@@ -189,11 +188,11 @@ def optimizar_paro(df_fragmentado, horas_paro):
 
     for i in range(tareas):
 
-        centro = df_fragmentado.iloc[i]["centro"]
-        esp = df_fragmentado.iloc[i]["especialidad"]
+        c = df_fragmentado.iloc[i]["centro"]
+        e = df_fragmentado.iloc[i]["especialidad"]
 
         model.Add(
-            sum(asignacion[(i,t)] for t in tecnicos[(centro,esp)]) == 1
+            sum(asignacion[(i,t)] for t in tecnicos[(c,e)]) == 1
         )
 
     # capacidad tecnico
@@ -202,60 +201,72 @@ def optimizar_paro(df_fragmentado, horas_paro):
 
         for t in lista_tecnicos:
 
-            model.Add(
-                sum(
-                    asignacion[(i,t)] * int(df_fragmentado.iloc[i]["duracion"])
-                    for i in range(tareas)
-                    if (i,t) in asignacion
-                ) <= capacidad_tecnico
-            )
+            tareas_tecnico = [
+                asignacion[(i,t)]
+                for i in range(tareas)
+                if (i,t) in asignacion
+            ]
+
+            if len(tareas_tecnico) > 0:
+
+                model.Add(
+                    sum(
+                        asignacion[(i,t)] * int(df_fragmentado.iloc[i]["duracion"])
+                        for i in range(tareas)
+                        if (i,t) in asignacion
+                    ) <= capacidad_tecnico
+                )
 
     # minimizar tecnicos
 
-    tecnico_usado=[]
+    tecnico_usado = []
 
     for (c,e),lista_tecnicos in tecnicos.items():
 
         for t in lista_tecnicos:
 
-            usado=model.NewBoolVar(f"usado_{t}")
+            tareas_tecnico = [
+                asignacion[(i,t)]
+                for i in range(tareas)
+                if (i,t) in asignacion
+            ]
 
-            model.AddMaxEquality(
-                usado,
-                [asignacion[(i,t)] for i in range(tareas) if (i,t) in asignacion]
-            )
+            if len(tareas_tecnico) > 0:
 
-            tecnico_usado.append(usado)
+                usado = model.NewBoolVar(f"usado_{t}")
+
+                model.AddMaxEquality(usado, tareas_tecnico)
+
+                tecnico_usado.append(usado)
 
     model.Minimize(sum(tecnico_usado))
 
-    solver=cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds=60
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 60
 
-    status=solver.Solve(model)
+    status = solver.Solve(model)
 
-    resultado=[]
+    resultado = []
 
     if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
 
         for (i,t),var in asignacion.items():
 
-            if solver.Value(var)==1:
+            if solver.Value(var) == 1:
 
-                row=df_fragmentado.iloc[i]
+                row = df_fragmentado.iloc[i]
 
                 resultado.append({
-                    "Tecnico":t,
-                    "Centro":row["centro"],
-                    "Especialidad":row["especialidad"],
-                    "Orden":row["orden"],
-                    "Actividad":row["actividad"],
-                    "Bloque":row["bloque"],
-                    "Duracion":row["duracion"]
+                    "Tecnico": t,
+                    "Centro": row["centro"],
+                    "Especialidad": row["especialidad"],
+                    "Orden": row["orden"],
+                    "Actividad": row["actividad"],
+                    "Bloque": row["bloque"],
+                    "Duracion": row["duracion"]
                 })
 
     return pd.DataFrame(resultado)
-
 # ---------------------------------------------------------
 # EJECUCION
 # ---------------------------------------------------------
