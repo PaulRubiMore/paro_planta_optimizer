@@ -160,7 +160,14 @@ def optimizar_paro(df_fragmentado, horas_paro):
     max_tecnicos = 100
     tareas = len(df_fragmentado)
 
-    # combinaciones reales centro-especialidad
+    # grupos actividad
+    df_fragmentado["grupo"] = (
+        df_fragmentado["orden"].astype(str) + "_" +
+        df_fragmentado["actividad"].astype(str)
+    )
+
+    duraciones = df_fragmentado.groupby("grupo")["duracion"].sum()
+
     combos = df_fragmentado[["centro","especialidad"]].drop_duplicates()
 
     tecnicos = {}
@@ -174,7 +181,7 @@ def optimizar_paro(df_fragmentado, horas_paro):
 
     asignacion = {}
 
-    # crear variables solo compatibles
+    # variables
     for i in range(tareas):
 
         c = df_fragmentado.iloc[i]["centro"]
@@ -184,8 +191,7 @@ def optimizar_paro(df_fragmentado, horas_paro):
 
             asignacion[(i,t)] = model.NewBoolVar(f"a_{i}_{t}")
 
-    # cada actividad tiene tecnico
-
+    # cada bloque tiene tecnico
     for i in range(tareas):
 
         c = df_fragmentado.iloc[i]["centro"]
@@ -196,7 +202,6 @@ def optimizar_paro(df_fragmentado, horas_paro):
         )
 
     # capacidad tecnico
-
     for (c,e),lista_tecnicos in tecnicos.items():
 
         for t in lista_tecnicos:
@@ -217,8 +222,34 @@ def optimizar_paro(df_fragmentado, horas_paro):
                     ) <= capacidad_tecnico
                 )
 
-    # minimizar tecnicos
+    # continuidad de actividad
+    grupos = df_fragmentado.groupby("grupo")
 
+    for grupo_id,grupo in grupos:
+
+        if duraciones[grupo_id] <= capacidad_tecnico:
+
+            indices = grupo.index.tolist()
+
+            if len(indices) > 1:
+
+                for i in range(len(indices)-1):
+
+                    a = indices[i]
+                    b = indices[i+1]
+
+                    c = df_fragmentado.loc[a,"centro"]
+                    e = df_fragmentado.loc[a,"especialidad"]
+
+                    for t in tecnicos[(c,e)]:
+
+                        if (a,t) in asignacion and (b,t) in asignacion:
+
+                            model.Add(
+                                asignacion[(a,t)] == asignacion[(b,t)]
+                            )
+
+    # minimizar tecnicos
     tecnico_usado = []
 
     for (c,e),lista_tecnicos in tecnicos.items():
