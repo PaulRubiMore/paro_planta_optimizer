@@ -156,9 +156,14 @@ def fragmentar_actividades(df):
 # OPTIMIZADOR
 # -----------------------------------------------------------------------------
 
-def optimizar_paro(df_fragmentado):
+def optimizar_paro(df_fragmentado, horas_paro):
 
     model = cp_model.CpModel()
+
+    from math import ceil
+
+    dias_paro = ceil(horas_paro / 24)
+    capacidad_tecnico = dias_paro * 8
 
     max_tecnicos = 100
     tareas = len(df_fragmentado)
@@ -169,12 +174,12 @@ def optimizar_paro(df_fragmentado):
         for t in range(max_tecnicos):
             asignacion[(i,t)] = model.NewBoolVar(f"a_{i}_{t}")
 
-    # cada tarea tiene un tecnico
+    # cada tarea tiene tecnico
 
     for i in range(tareas):
         model.Add(sum(asignacion[(i,t)] for t in range(max_tecnicos)) == 1)
 
-    # capacidad tecnico 8h
+    # capacidad tecnico
 
     for t in range(max_tecnicos):
 
@@ -182,16 +187,14 @@ def optimizar_paro(df_fragmentado):
             sum(
                 asignacion[(i,t)] * int(df_fragmentado.iloc[i]["duracion"])
                 for i in range(tareas)
-            ) <= 8
+            ) <= capacidad_tecnico
         )
 
-    # tecnico usado
-
-    tecnico_usado=[]
+    tecnico_usado = []
 
     for t in range(max_tecnicos):
 
-        usado=model.NewBoolVar(f"tec_usado_{t}")
+        usado = model.NewBoolVar(f"tec_usado_{t}")
 
         model.AddMaxEquality(
             usado,
@@ -202,31 +205,30 @@ def optimizar_paro(df_fragmentado):
 
     model.Minimize(sum(tecnico_usado))
 
-    solver=cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds=30
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 30
 
-    status=solver.Solve(model)
+    status = solver.Solve(model)
 
-    resultado=[]
+    resultado = []
 
     if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
 
         for i in range(tareas):
-
             for t in range(max_tecnicos):
 
-                if solver.Value(asignacion[(i,t)])==1:
+                if solver.Value(asignacion[(i,t)]) == 1:
 
-                    row=df_fragmentado.iloc[i]
+                    row = df_fragmentado.iloc[i]
 
                     resultado.append({
-                        "Tecnico":f"T{t+1}",
-                        "Orden":row["orden"],
-                        "Actividad":row["actividad"],
-                        "Centro":row["centro"],
-                        "Especialidad":row["especialidad"],
-                        "Bloque":row["bloque"],
-                        "Duracion":row["duracion"]
+                        "Tecnico": f"T{t+1}",
+                        "Orden": row["orden"],
+                        "Actividad": row["actividad"],
+                        "Centro": row["centro"],
+                        "Especialidad": row["especialidad"],
+                        "Bloque": row["bloque"],
+                        "Duracion": row["duracion"]
                     })
 
     return pd.DataFrame(resultado)
@@ -254,7 +256,7 @@ if archivo1 and archivo2:
 
     st.subheader("Optimización")
 
-    df_opt = optimizar_paro(df_frag)
+    df_opt = optimizar_paro(df_frag, horas_paro)
 
     st.dataframe(df_opt)
 
