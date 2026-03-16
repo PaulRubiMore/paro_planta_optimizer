@@ -1,10 +1,10 @@
-
 # =============================================================================
 # DESCOMPOSICIÓN DE ÓRDENES DE MANTENIMIENTO
 # =============================================================================
 
 import streamlit as st
 import pandas as pd
+from datetime import datetime
 
 # -------------------------------------------------------------------------
 # CONFIGURACIÓN APP
@@ -12,8 +12,29 @@ import pandas as pd
 st.set_page_config(page_title="Descomposición de Actividades", page_icon="🏭", layout="wide")
 st.title("🏭 Descomposición de Órdenes de Mantenimiento")
 
+# -------------------------------------------------------------------------
+# PARÁMETROS DEL PARO
+# -------------------------------------------------------------------------
+st.sidebar.subheader("Parámetros del paro")
+
+horas_paro = st.sidebar.number_input(
+    "Duración del paro (horas)",
+    min_value=1,
+    max_value=500,
+    value=36
+)
+
+fecha_inicio_paro = st.sidebar.date_input("Fecha inicio del paro")
+hora_inicio_paro = st.sidebar.time_input("Hora inicio del paro")
+
+inicio_paro = datetime.combine(fecha_inicio_paro, hora_inicio_paro)
+
+# -------------------------------------------------------------------------
+# CARGA ARCHIVOS
+# -------------------------------------------------------------------------
 archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo", type=["xlsx"])
 archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades", type=["xlsx"])
+
 
 # -------------------------------------------------------------------------
 # FUNCIONES AUXILIARES
@@ -36,7 +57,7 @@ def cargar_datos(archivo1, archivo2):
         if "TIEMPO" in col.upper():
             df1 = df1.rename(columns={col:"TIEMPO (Hrs)"})
 
-    # Filtrar ejecutor massy
+    # Filtrar ejecutor MASSY
     df1 = df1[df1["EJECUTOR"].str.contains("massy", case=False, na=False)]
 
     df1 = df1[[
@@ -68,6 +89,8 @@ def cargar_datos(archivo1, archivo2):
 
     df["duracion_h"] = df["duracion_h"].fillna(1).astype(float)
 
+    df["criticidad"] = df["criticidad"].astype(str).str.strip().str.upper()
+
     return df
 
 
@@ -86,6 +109,7 @@ def descomponer_ordenes(df):
             .replace("/,",",")
             .replace("/",",")
             .split(",")
+            if e.strip() != ""
         ]
 
         total = row["duracion_h"]
@@ -113,19 +137,16 @@ def descomponer_ordenes(df):
         for esp,pct in zip(especs,porcentajes):
 
             dur = total * pct
-
             dur = int(dur) if dur-int(dur)<1.5 else int(dur)+1
 
             actividades.append({
-
                 "orden":row["orden"],
                 "actividad":row["actividad"],
                 "centro":row["centro"],
                 "especialidad":esp,
-                "criticidad":str(row["criticidad"]).upper(),
+                "criticidad":row["criticidad"],
                 "duracion_h":dur,
                 "duracion_total_orden":total
-
             })
 
     return pd.DataFrame(actividades)
@@ -135,6 +156,11 @@ def descomponer_ordenes(df):
 # EJECUCIÓN
 # -------------------------------------------------------------------------
 if archivo1 and archivo2:
+
+    st.subheader("Parámetros del paro")
+
+    st.write("Duración del paro (horas):", horas_paro)
+    st.write("Inicio del paro:", inicio_paro)
 
     df = cargar_datos(archivo1, archivo2)
 
@@ -154,7 +180,10 @@ if archivo1 and archivo2:
 
     df_actividades["prioridad"] = df_actividades["criticidad"].map(prioridad)
 
-    df_actividades = df_actividades.sort_values(by="prioridad")
+    df_actividades = df_actividades.sort_values(
+        by=["prioridad","duracion_h"],
+        ascending=[True,False]
+    )
 
     df_actividades = df_actividades.drop(columns="prioridad")
 
