@@ -158,23 +158,30 @@ def optimizar_paro(df_fragmentado, horas_paro):
     capacidad_tecnico = dias_paro * 8
 
     centros = df_fragmentado["centro"].unique()
+    especialidades = df_fragmentado["especialidad"].unique()
 
-    max_tecnicos_centro = 100
+    max_tecnicos = 100
 
-    tecnicos_por_centro = {}
+    tecnicos = {}
+
+    # crear tecnicos por centro y especialidad
 
     for c in centros:
-        tecnicos_por_centro[c] = [f"{c}_T{i+1}" for i in range(max_tecnicos_centro)]
+        for e in especialidades:
+            tecnicos[(c,e)] = [f"{c}_{e}_T{i+1}" for i in range(max_tecnicos)]
 
     asignacion = {}
 
     tareas = len(df_fragmentado)
 
+    # variables decision
+
     for i in range(tareas):
 
         centro = df_fragmentado.iloc[i]["centro"]
+        esp = df_fragmentado.iloc[i]["especialidad"]
 
-        for t in tecnicos_por_centro[centro]:
+        for t in tecnicos[(centro,esp)]:
 
             asignacion[(i,t)] = model.NewBoolVar(f"a_{i}_{t}")
 
@@ -183,16 +190,17 @@ def optimizar_paro(df_fragmentado, horas_paro):
     for i in range(tareas):
 
         centro = df_fragmentado.iloc[i]["centro"]
+        esp = df_fragmentado.iloc[i]["especialidad"]
 
         model.Add(
-            sum(asignacion[(i,t)] for t in tecnicos_por_centro[centro]) == 1
+            sum(asignacion[(i,t)] for t in tecnicos[(centro,esp)]) == 1
         )
 
     # capacidad tecnico
 
-    for centro in centros:
+    for (c,e),lista_tecnicos in tecnicos.items():
 
-        for t in tecnicos_por_centro[centro]:
+        for t in lista_tecnicos:
 
             model.Add(
                 sum(
@@ -206,9 +214,9 @@ def optimizar_paro(df_fragmentado, horas_paro):
 
     tecnico_usado=[]
 
-    for centro in centros:
+    for (c,e),lista_tecnicos in tecnicos.items():
 
-        for t in tecnicos_por_centro[centro]:
+        for t in lista_tecnicos:
 
             usado=model.NewBoolVar(f"usado_{t}")
 
@@ -239,9 +247,9 @@ def optimizar_paro(df_fragmentado, horas_paro):
                 resultado.append({
                     "Tecnico":t,
                     "Centro":row["centro"],
+                    "Especialidad":row["especialidad"],
                     "Orden":row["orden"],
                     "Actividad":row["actividad"],
-                    "Especialidad":row["especialidad"],
                     "Bloque":row["bloque"],
                     "Duracion":row["duracion"]
                 })
