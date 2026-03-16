@@ -7,45 +7,56 @@ import pandas as pd
 from datetime import datetime
 from ortools.sat.python import cp_model
 
-# -------------------------------------------------------------------------
-# CONFIGURACIÓN APP
-# -------------------------------------------------------------------------
-st.set_page_config(page_title="Optimización Paro Planta", page_icon="🏭", layout="wide")
-st.title("🏭 Optimización de Parada de Planta")
+# -----------------------------------------------------------------------------
+# CONFIGURACION APP
+# -----------------------------------------------------------------------------
 
-# -------------------------------------------------------------------------
-# PARÁMETROS DEL PARO
-# -------------------------------------------------------------------------
-st.sidebar.subheader("Parámetros del paro")
+st.set_page_config(page_title="Optimizador Paro Planta", layout="wide")
+st.title("Optimización Parada de Planta")
+
+# -----------------------------------------------------------------------------
+# PARAMETROS DEL PARO
+# -----------------------------------------------------------------------------
+
+st.sidebar.header("Parametros del paro")
 
 horas_paro = st.sidebar.number_input(
-    "Duración del paro (horas)",
+    "Duracion del paro (horas)",
     min_value=1,
     max_value=500,
     value=36
 )
 
-fecha_inicio_paro = st.sidebar.date_input("Fecha inicio del paro")
-hora_inicio_paro = st.sidebar.time_input("Hora inicio del paro")
+fecha_inicio = st.sidebar.date_input("Fecha inicio paro")
+hora_inicio = st.sidebar.time_input("Hora inicio paro")
 
-inicio_paro = datetime.combine(fecha_inicio_paro, hora_inicio_paro)
+inicio_paro = datetime.combine(fecha_inicio, hora_inicio)
 
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # CARGA ARCHIVOS
-# -------------------------------------------------------------------------
-archivo1 = st.sidebar.file_uploader("Archivo 1 - Paro de bombeo", type=["xlsx"])
-archivo2 = st.sidebar.file_uploader("Archivo 2 - Lista de actividades", type=["xlsx"])
+# -----------------------------------------------------------------------------
 
-# -------------------------------------------------------------------------
-# LIMPIAR COLUMNAS
-# -------------------------------------------------------------------------
+archivo1 = st.sidebar.file_uploader("Archivo SAP actividades", type=["xlsx"])
+archivo2 = st.sidebar.file_uploader("Archivo zonas", type=["xlsx"])
+
+# -----------------------------------------------------------------------------
+# LIMPIEZA COLUMNAS
+# -----------------------------------------------------------------------------
+
 def limpiar_columnas(df):
-    df.columns = df.columns.str.strip().str.replace("\n"," ",regex=True)
+
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.replace("\n"," ",regex=True)
+    )
+
     return df
 
-# -------------------------------------------------------------------------
-# CARGAR DATOS
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# CARGA DATOS
+# -----------------------------------------------------------------------------
+
 def cargar_datos(archivo1, archivo2):
 
     df1 = pd.read_excel(archivo1)
@@ -58,20 +69,22 @@ def cargar_datos(archivo1, archivo2):
         if "TIEMPO" in col.upper():
             df1 = df1.rename(columns={col:"TIEMPO (Hrs)"})
 
-    df1 = df1[df1["EJECUTOR"].str.contains("massy", case=False, na=False)]
+    df1 = df1[df1["EJECUTOR"].str.contains("massy",case=False,na=False)]
 
     df1 = df1[[
         "Centro planificación",
         "Actividades",
         "Orden",
         "TIEMPO (Hrs)",
-        "ESTADO",
         "ESPECIALIDAD",
-        "EJECUTOR",
         "CRITICIDAD"
     ]]
 
-    df2 = df2[["Actividades","Zona","Sector"]]
+    df2 = df2[[
+        "Actividades",
+        "Zona",
+        "Sector"
+    ]]
 
     df1 = df1.drop_duplicates(subset=["Orden"])
     df2 = df2.drop_duplicates(subset=["Actividades"])
@@ -91,42 +104,37 @@ def cargar_datos(archivo1, archivo2):
 
     return df
 
-# -------------------------------------------------------------------------
-# DESCOMPOSICIÓN POR ESPECIALIDAD
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# DESCOMPOSICION POR ESPECIALIDAD
+# -----------------------------------------------------------------------------
+
 def descomponer_ordenes(df):
 
     actividades = []
 
     for _,row in df.iterrows():
 
-        especs=[e.strip().upper() for e in str(row["especialidad"]).replace("/",",").split(",")]
+        especs = [
+            e.strip().upper()
+            for e in str(row["especialidad"])
+            .replace("/",",")
+            .split(",")
+        ]
 
-        total=row["duracion_h"]
+        total = row["duracion_h"]
 
         if len(especs)==3:
             porcentajes=[0.5,0.3,0.2]
 
         elif len(especs)==2:
-
-            if "MECANICA" in especs and "ELECTRICA" in especs:
-                porcentajes=[0.65,0.35]
-
-            elif "ELECTRICA" in especs and "INSTRUMENTACION" in especs:
-                porcentajes=[0.6,0.4]
-
-            elif "MECANICA" in especs and "INSTRUMENTACION" in especs:
-                porcentajes=[0.6,0.4]
-
-            else:
-                porcentajes=[0.5,0.5]
+            porcentajes=[0.6,0.4]
 
         else:
             porcentajes=[1]
 
         for esp,pct in zip(especs,porcentajes):
 
-            dur=round(total*pct)
+            dur = round(total*pct)
 
             actividades.append({
                 "orden":row["orden"],
@@ -139,9 +147,10 @@ def descomponer_ordenes(df):
 
     return pd.DataFrame(actividades)
 
-# -------------------------------------------------------------------------
-# FRAGMENTAR EN BLOQUES DE 8 HORAS
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# FRAGMENTAR EN BLOQUES 8H
+# -----------------------------------------------------------------------------
+
 def fragmentar_actividades(df):
 
     fragmentos=[]
@@ -160,8 +169,8 @@ def fragmentar_actividades(df):
                 "actividad":row["actividad"],
                 "centro":row["centro"],
                 "especialidad":row["especialidad"],
-                "duracion":dur,
-                "bloque":bloque
+                "bloque":bloque,
+                "duracion":dur
             })
 
             horas-=dur
@@ -169,39 +178,122 @@ def fragmentar_actividades(df):
 
     return pd.DataFrame(fragmentos)
 
-# -------------------------------------------------------------------------
-# OPTIMIZACIÓN ORTOOLS
-# -------------------------------------------------------------------------
-                "actividad":row["actividad"],
+# -----------------------------------------------------------------------------
+# OPTIMIZADOR ORTOOLS
+# -----------------------------------------------------------------------------
 
-# -------------------------------------------------------------------------
-# EJECUCIÓN
-# -------------------------------------------------------------------------
+def optimizar_paro(df_fragmentado, horas_paro):
+
+    model = cp_model.CpModel()
+
+    n = len(df_fragmentado)
+    max_tecnicos = 100
+
+    start=[]
+    end=[]
+    tecnico=[]
+
+    for i,row in df_fragmentado.iterrows():
+
+        dur=int(row["duracion"])
+
+        s=model.NewIntVar(0,horas_paro,f"start_{i}")
+        e=model.NewIntVar(0,horas_paro,f"end_{i}")
+        t=model.NewIntVar(0,max_tecnicos-1,f"tec_{i}")
+
+        model.Add(e==s+dur)
+
+        start.append(s)
+        end.append(e)
+        tecnico.append(t)
+
+    # no solapamiento
+
+    for tec in range(max_tecnicos):
+
+        intervalos=[]
+
+        for i,row in df_fragmentado.iterrows():
+
+            dur=int(row["duracion"])
+
+            is_t=model.NewBoolVar(f"is_{i}_{tec}")
+
+            model.Add(tecnico[i]==tec).OnlyEnforceIf(is_t)
+            model.Add(tecnico[i]!=tec).OnlyEnforceIf(is_t.Not())
+
+            intervalo=model.NewOptionalIntervalVar(
+                start[i],
+                dur,
+                end[i],
+                is_t,
+                f"int_{i}_{tec}"
+            )
+
+            intervalos.append(intervalo)
+
+        model.AddNoOverlap(intervalos)
+
+    tecnico_usado=model.NewIntVar(0,max_tecnicos,"max_tecnico")
+
+    model.AddMaxEquality(tecnico_usado,tecnico)
+
+    model.Minimize(tecnico_usado)
+
+    solver=cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds=30
+
+    status=solver.Solve(model)
+
+    resultado=[]
+
+    if status in [cp_model.OPTIMAL,cp_model.FEASIBLE]:
+
+        for i,row in df_fragmentado.iterrows():
+
+            resultado.append({
+                "Tecnico":f"T{solver.Value(tecnico[i])+1}",
+                "Orden":row["orden"],
+                "Actividad":row["actividad"],
+                "Centro":row["centro"],
+                "Especialidad":row["especialidad"],
+                "Bloque":row["bloque"],
+                "Inicio_h":solver.Value(start[i]),
+                "Fin_h":solver.Value(end[i]),
+                "Duracion":row["duracion"]
+            })
+
+    return pd.DataFrame(resultado)
+
+# -----------------------------------------------------------------------------
+# EJECUCION
+# -----------------------------------------------------------------------------
+
 if archivo1 and archivo2:
 
-    st.subheader("Parámetros del paro")
-    st.write("Duración paro:",horas_paro)
-    st.write("Inicio paro:",inicio_paro)
+    st.subheader("Parametros del paro")
+    st.write("Duracion:", horas_paro)
+    st.write("Inicio:", inicio_paro)
 
-    df=cargar_datos(archivo1,archivo2)
+    df = cargar_datos(archivo1, archivo2)
 
     st.subheader("Datos cargados")
     st.dataframe(df)
 
-    df_actividades=descomponer_ordenes(df)
+    df_act = descomponer_ordenes(df)
 
-    st.subheader("Actividades descompuestas")
-    st.dataframe(df_actividades)
+    st.subheader("Actividades por especialidad")
+    st.dataframe(df_act)
 
-    df_fragmentado=fragmentar_actividades(df_actividades)
+    df_frag = fragmentar_actividades(df_act)
 
-    st.subheader("Actividades fragmentadas (bloques 8h)")
-    st.dataframe(df_fragmentado)
+    st.subheader("Bloques de trabajo (8h)")
+    st.dataframe(df_frag)
 
-    st.subheader("Optimización del paro")
+    st.subheader("Optimización")
 
-    df_opt=optimizar_paro(df_fragmentado,horas_paro)
+    df_opt = optimizar_paro(df_frag, horas_paro)
 
     st.dataframe(df_opt)
 
-    st.write("Técnicos requeridos:",df_opt["Tecnico"].nunique())
+    st.success(f"Técnicos requeridos: {df_opt['Tecnico'].nunique()}")
