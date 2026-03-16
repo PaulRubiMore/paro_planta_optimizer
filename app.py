@@ -86,7 +86,6 @@ def cargar_datos(archivo1, archivo2):
     })
 
     df["duracion_h"] = df["duracion_h"].fillna(1).astype(float)
-
     df["criticidad"] = df["criticidad"].astype(str).str.strip().str.upper()
 
     return df
@@ -153,34 +152,33 @@ def descomponer_ordenes(df):
 # -------------------------------------------------------------------------
 # FRAGMENTAR ACTIVIDADES EN BLOQUES DE 8 HORAS
 # -------------------------------------------------------------------------
-def fragmentar_bloques(df_actividades):
+def fragmentar_actividades(df_actividades, bloque_horas=8):
 
-    bloques = []
+    fragmentos = []
 
-    for _,row in df_actividades.iterrows():
+    for _, row in df_actividades.iterrows():
 
-        duracion = int(row["duracion_h"])
-        restante = duracion
+        horas_restantes = row["duracion_h"]
         bloque = 1
 
-        while restante > 0:
+        while horas_restantes > 0:
 
-            horas = 8 if restante >= 8 else restante
+            duracion = min(bloque_horas, horas_restantes)
 
-            bloques.append({
-                "orden":row["orden"],
-                "actividad":row["actividad"],
-                "centro":row["centro"],
-                "especialidad":row["especialidad"],
-                "criticidad":row["criticidad"],
-                "bloque":bloque,
-                "duracion_h":horas
+            fragmentos.append({
+                "orden": row["orden"],
+                "actividad": row["actividad"],
+                "centro": row["centro"],
+                "especialidad": row["especialidad"],
+                "criticidad": row["criticidad"],
+                "bloque": bloque,
+                "duracion_bloque_h": duracion
             })
 
-            restante -= horas
+            horas_restantes -= duracion
             bloque += 1
 
-    return pd.DataFrame(bloques)
+    return pd.DataFrame(fragmentos)
 
 
 # -------------------------------------------------------------------------
@@ -189,7 +187,6 @@ def fragmentar_bloques(df_actividades):
 if archivo1 and archivo2:
 
     st.subheader("Parámetros del paro")
-
     st.write("Duración del paro (horas):", horas_paro)
     st.write("Inicio del paro:", inicio_paro)
 
@@ -201,11 +198,6 @@ if archivo1 and archivo2:
     df_actividades = descomponer_ordenes(df)
 
     # -------------------------------------------------
-    # FRAGMENTACIÓN EN BLOQUES DE 8 HORAS
-    # -------------------------------------------------
-    df_bloques = fragmentar_bloques(df_actividades)
-
-    # -------------------------------------------------
     # ORGANIZAR POR CRITICIDAD
     # -------------------------------------------------
     prioridad = {
@@ -214,16 +206,26 @@ if archivo1 and archivo2:
         "BAJA":3
     }
 
-    df_bloques["prioridad"] = df_bloques["criticidad"].map(prioridad)
+    df_actividades["prioridad"] = df_actividades["criticidad"].map(prioridad)
 
-    df_bloques = df_bloques.sort_values(
+    df_actividades = df_actividades.sort_values(
         by=["prioridad","duracion_h"],
         ascending=[True,False]
     )
 
-    df_bloques = df_bloques.drop(columns="prioridad")
+    df_actividades = df_actividades.drop(columns="prioridad")
+
+    st.subheader("Actividades organizadas por criticidad")
+    st.dataframe(df_actividades)
+
+    st.write("Total actividades generadas:", len(df_actividades))
+
+    # -------------------------------------------------
+    # FRAGMENTACIÓN EN BLOQUES DE 8 HORAS
+    # -------------------------------------------------
+    df_fragmentado = fragmentar_actividades(df_actividades)
 
     st.subheader("Actividades fragmentadas en bloques de 8 horas")
-    st.dataframe(df_bloques)
+    st.dataframe(df_fragmentado)
 
-    st.write("Total bloques generados:", len(df_bloques))
+    st.write("Total bloques generados:", len(df_fragmentado))
