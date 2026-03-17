@@ -46,14 +46,10 @@ def cargar_datos(a1,a2):
 
     df1 = df1[[
         "Centro planificación","Actividades","Orden",
-        "TIEMPO (Hrs)","ESPECIALIDAD","CRITICIDAD"
+        "TIEMPO (Hrs)","ESPECIALIDAD"
     ]]
 
-    df2 = df2[["Actividades","Zona","Sector"]]
-
-    df = df1.merge(df2,on="Actividades",how="left")
-
-    df = df.rename(columns={
+    df = df1.rename(columns={
         "Orden":"orden",
         "Actividades":"actividad",
         "TIEMPO (Hrs)":"duracion_h",
@@ -159,14 +155,14 @@ def optimizar(df, horas_paro):
         for t in tecnicos[(c,e)]:
             asignacion[(i,t)]=model.NewBoolVar(f"a_{i}_{t}")
 
-    # asignacion unica
+    # cada bloque tiene tecnico
     for i in range(n):
         c=df.iloc[i]["centro"]
         e=df.iloc[i]["especialidad"]
 
         model.Add(sum(asignacion[(i,t)] for t in tecnicos[(c,e)])==1)
 
-    # capacidad
+    # capacidad tecnico
     for (c,e),lista in tecnicos.items():
         for t in lista:
 
@@ -178,26 +174,25 @@ def optimizar(df, horas_paro):
                     sum(asignacion[(i,t)]*int(df.iloc[i]["duracion"]) for (i,t) in tareas) <= cap
                 )
 
-   # continuidad fuerte (MISMO TECNICO)
-   for g,grp in df.groupby("grupo"):
-       if dur_total[g] <= cap:
-           idx = grp.index.tolist()
-           c = df.loc[idx[0],"centro"]
-           e = df.loc[idx[0],"especialidad"]
-           # crear variable por tecnico (elige 1 tecnico para TODA la actividad)
-           selector_tecnico = {}
-           for t in tecnicos[(c,e)]:
-               selector_tecnico[t] = model.NewBoolVar(f"sel_{g}_{t}")
-           # SOLO UN tecnico para toda la actividad
-           model.Add(sum(selector_tecnico[t] for t in tecnicos[(c,e)]) == 1)
-           # todos los bloques usan ese tecnico
-           for i in idx:
-               for t in tecnicos[(c,e)]:
-                   if (i,t) in asignacion:
-                       model.Add(
-                           asignacion[(i,t)] == selector_tecnico[t]
-                       )
-                       
+    # continuidad FUERTE (misma persona)
+    for g,grp in df.groupby("grupo"):
+
+        if dur_total[g] <= cap:
+
+            idx=grp.index.tolist()
+            c=df.loc[idx[0],"centro"]
+            e=df.loc[idx[0],"especialidad"]
+
+            selector={t:model.NewBoolVar(f"sel_{g}_{t}") for t in tecnicos[(c,e)]}
+
+            model.Add(sum(selector[t] for t in tecnicos[(c,e)])==1)
+
+            for i in idx:
+                for t in tecnicos[(c,e)]:
+
+                    if (i,t) in asignacion:
+                        model.Add(asignacion[(i,t)] == selector[t])
+
     # minimizar tecnicos
     usados=[]
 
@@ -317,8 +312,6 @@ def gantt(df):
 if archivo1 and archivo2:
 
     df=cargar_datos(archivo1,archivo2)
-    st.dataframe(df)
-
     df2=descomponer(df)
     df3=fragmentar(df2)
 
@@ -326,10 +319,10 @@ if archivo1 and archivo2:
 
     if not df_opt.empty:
 
-        st.subheader("Asignación")
+        st.subheader("Asignación óptima")
         st.dataframe(df_opt)
 
-        st.success(f"Tecnicos: {df_opt['Tecnico'].nunique()}")
+        st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
 
         df_crono=cronograma(df_opt,inicio_paro)
 
