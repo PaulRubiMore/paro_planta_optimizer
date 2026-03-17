@@ -178,24 +178,26 @@ def optimizar(df, horas_paro):
                     sum(asignacion[(i,t)]*int(df.iloc[i]["duracion"]) for (i,t) in tareas) <= cap
                 )
 
-    # continuidad
-    for g,grp in df.groupby("grupo"):
-
-        if dur_total[g] <= cap:
-
-            idx=grp.index.tolist()
-
-            for i in range(len(idx)-1):
-
-                a,b=idx[i],idx[i+1]
-                c=df.loc[a,"centro"]
-                e=df.loc[a,"especialidad"]
-
-                for t in tecnicos[(c,e)]:
-
-                    if (a,t) in asignacion and (b,t) in asignacion:
-                        model.Add(asignacion[(a,t)] == asignacion[(b,t)])
-
+   # continuidad fuerte (MISMO TECNICO)
+   for g,grp in df.groupby("grupo"):
+       if dur_total[g] <= cap:
+           idx = grp.index.tolist()
+           c = df.loc[idx[0],"centro"]
+           e = df.loc[idx[0],"especialidad"]
+           # crear variable por tecnico (elige 1 tecnico para TODA la actividad)
+           selector_tecnico = {}
+           for t in tecnicos[(c,e)]:
+               selector_tecnico[t] = model.NewBoolVar(f"sel_{g}_{t}")
+           # SOLO UN tecnico para toda la actividad
+           model.Add(sum(selector_tecnico[t] for t in tecnicos[(c,e)]) == 1)
+           # todos los bloques usan ese tecnico
+           for i in idx:
+               for t in tecnicos[(c,e)]:
+                   if (i,t) in asignacion:
+                       model.Add(
+                           asignacion[(i,t)] == selector_tecnico[t]
+                       )
+                       
     # minimizar tecnicos
     usados=[]
 
