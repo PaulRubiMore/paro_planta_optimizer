@@ -1,35 +1,28 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import ceil
 from ortools.sat.python import cp_model
+import plotly.express as px
 
-st.set_page_config(page_title="Optimizador Paro Planta", layout="wide")
-st.title("Optimización Parada de Planta")
+st.set_page_config(layout="wide")
+st.title("OPTIMIZADOR PARADA DE PLANTA")
 
 # ---------------------------------------------------------
-# PARAMETROS PARO
+# PARAMETROS
 # ---------------------------------------------------------
 
-st.sidebar.header("Parametros paro")
-
-horas_paro = st.sidebar.number_input(
-    "Duracion paro (horas)",
-    min_value=1,
-    max_value=500,
-    value=36
-)
-
-fecha_inicio = st.sidebar.date_input("Fecha inicio paro")
-hora_inicio = st.sidebar.time_input("Hora inicio paro")
+horas_paro = st.sidebar.number_input("Duración paro (h)", 1, 500, 36)
+fecha_inicio = st.sidebar.date_input("Fecha inicio")
+hora_inicio = st.sidebar.time_input("Hora inicio")
 
 inicio_paro = datetime.combine(fecha_inicio, hora_inicio)
 
-archivo1 = st.sidebar.file_uploader("Archivo actividades SAP", type=["xlsx"])
+archivo1 = st.sidebar.file_uploader("Archivo SAP", type=["xlsx"])
 archivo2 = st.sidebar.file_uploader("Archivo zonas", type=["xlsx"])
 
 # ---------------------------------------------------------
-# LIMPIAR COLUMNAS
+# LIMPIEZA
 # ---------------------------------------------------------
 
 def limpiar_columnas(df):
@@ -37,16 +30,13 @@ def limpiar_columnas(df):
     return df
 
 # ---------------------------------------------------------
-# CARGAR DATOS
+# CARGA
 # ---------------------------------------------------------
 
-def cargar_datos(archivo1, archivo2):
+def cargar_datos(a1,a2):
 
-    df1 = pd.read_excel(archivo1)
-    df2 = pd.read_excel(archivo2)
-
-    df1 = limpiar_columnas(df1)
-    df2 = limpiar_columnas(df2)
+    df1 = limpiar_columnas(pd.read_excel(a1))
+    df2 = limpiar_columnas(pd.read_excel(a2))
 
     for col in df1.columns:
         if "TIEMPO" in col.upper():
@@ -55,12 +45,8 @@ def cargar_datos(archivo1, archivo2):
     df1 = df1[df1["EJECUTOR"].str.contains("massy",case=False,na=False)]
 
     df1 = df1[[
-        "Centro planificación",
-        "Actividades",
-        "Orden",
-        "TIEMPO (Hrs)",
-        "ESPECIALIDAD",
-        "CRITICIDAD"
+        "Centro planificación","Actividades","Orden",
+        "TIEMPO (Hrs)","ESPECIALIDAD","CRITICIDAD"
     ]]
 
     df2 = df2[["Actividades","Zona","Sector"]]
@@ -72,7 +58,6 @@ def cargar_datos(archivo1, archivo2):
         "Actividades":"actividad",
         "TIEMPO (Hrs)":"duracion_h",
         "ESPECIALIDAD":"especialidad",
-        "CRITICIDAD":"criticidad",
         "Centro planificación":"centro"
     })
 
@@ -81,254 +66,275 @@ def cargar_datos(archivo1, archivo2):
     return df
 
 # ---------------------------------------------------------
-# DESCOMPONER POR ESPECIALIDAD
+# DESCOMPOSICION
 # ---------------------------------------------------------
 
-def descomponer_ordenes(df):
+def descomponer(df):
 
-    actividades=[]
+    out=[]
 
-    for _,row in df.iterrows():
+    for _,r in df.iterrows():
 
-        especs=[e.strip().upper() for e in str(row["especialidad"]).replace("/",",").split(",")]
+        especs = str(r["especialidad"]).replace("/",",").split(",")
+        especs=[e.strip().upper() for e in especs]
 
-        total=row["duracion_h"]
+        total=r["duracion_h"]
 
-        if len(especs)==3:
-            porcentajes=[0.5,0.3,0.2]
-        elif len(especs)==2:
-            porcentajes=[0.6,0.4]
-        else:
-            porcentajes=[1]
+        if len(especs)==3: p=[0.5,0.3,0.2]
+        elif len(especs)==2: p=[0.6,0.4]
+        else: p=[1]
 
-        for esp,pct in zip(especs,porcentajes):
+        for e,pp in zip(especs,p):
 
-            dur=round(total*pct)
-
-            actividades.append({
-                "orden":row["orden"],
-                "actividad":row["actividad"],
-                "centro":row["centro"],
-                "especialidad":esp,
-                "duracion_h":dur
+            out.append({
+                "orden":r["orden"],
+                "actividad":r["actividad"],
+                "centro":r["centro"],
+                "especialidad":e,
+                "duracion_h":round(total*pp)
             })
 
-    return pd.DataFrame(actividades)
+    return pd.DataFrame(out)
 
 # ---------------------------------------------------------
-# FRAGMENTAR BLOQUES 8H
+# FRAGMENTAR
 # ---------------------------------------------------------
 
-def fragmentar_actividades(df):
+def fragmentar(df):
 
-    fragmentos=[]
+    out=[]
 
-    for _,row in df.iterrows():
+    for _,r in df.iterrows():
 
-        horas=row["duracion_h"]
-        bloque=1
+        h=r["duracion_h"]
+        b=1
 
-        while horas>0:
+        while h>0:
 
-            dur=min(8,horas)
+            d=min(8,h)
 
-            fragmentos.append({
-                "orden":row["orden"],
-                "actividad":row["actividad"],
-                "centro":row["centro"],
-                "especialidad":row["especialidad"],
-                "bloque":bloque,
-                "duracion":dur
+            out.append({
+                "orden":r["orden"],
+                "actividad":r["actividad"],
+                "centro":r["centro"],
+                "especialidad":r["especialidad"],
+                "bloque":b,
+                "duracion":d
             })
 
-            horas-=dur
-            bloque+=1
+            h-=d
+            b+=1
 
-    return pd.DataFrame(fragmentos)
+    return pd.DataFrame(out)
 
 # ---------------------------------------------------------
 # OPTIMIZADOR
 # ---------------------------------------------------------
 
-def optimizar_paro(df_fragmentado, horas_paro):
+def optimizar(df, horas_paro):
 
-    model = cp_model.CpModel()
+    model=cp_model.CpModel()
 
-    dias_paro = ceil(horas_paro / 24)
-    capacidad_tecnico = dias_paro * 8
+    dias=ceil(horas_paro/24)
+    cap=dias*8
 
-    max_tecnicos = 100
-    tareas = len(df_fragmentado)
+    df["grupo"]=df["orden"].astype(str)+"_"+df["actividad"].astype(str)
+    dur_total=df.groupby("grupo")["duracion"].sum()
 
-    # grupos actividad
-    df_fragmentado["grupo"] = (
-        df_fragmentado["orden"].astype(str) + "_" +
-        df_fragmentado["actividad"].astype(str)
-    )
+    combos=df[["centro","especialidad"]].drop_duplicates()
 
-    duraciones = df_fragmentado.groupby("grupo")["duracion"].sum()
+    tecnicos={}
 
-    combos = df_fragmentado[["centro","especialidad"]].drop_duplicates()
+    for _,r in combos.iterrows():
+        c,e=r["centro"],r["especialidad"]
+        tecnicos[(c,e)]=[f"{c}_{e}_T{i}" for i in range(1,101)]
 
-    tecnicos = {}
+    asignacion={}
+    n=len(df)
 
-    for _,row in combos.iterrows():
-
-        c = row["centro"]
-        e = row["especialidad"]
-
-        tecnicos[(c,e)] = [f"{c}_{e}_T{i+1}" for i in range(max_tecnicos)]
-
-    asignacion = {}
-
-    # variables
-    for i in range(tareas):
-
-        c = df_fragmentado.iloc[i]["centro"]
-        e = df_fragmentado.iloc[i]["especialidad"]
+    for i in range(n):
+        c=df.iloc[i]["centro"]
+        e=df.iloc[i]["especialidad"]
 
         for t in tecnicos[(c,e)]:
+            asignacion[(i,t)]=model.NewBoolVar(f"a_{i}_{t}")
 
-            asignacion[(i,t)] = model.NewBoolVar(f"a_{i}_{t}")
+    # asignacion unica
+    for i in range(n):
+        c=df.iloc[i]["centro"]
+        e=df.iloc[i]["especialidad"]
 
-    # cada bloque tiene tecnico
-    for i in range(tareas):
+        model.Add(sum(asignacion[(i,t)] for t in tecnicos[(c,e)])==1)
 
-        c = df_fragmentado.iloc[i]["centro"]
-        e = df_fragmentado.iloc[i]["especialidad"]
+    # capacidad
+    for (c,e),lista in tecnicos.items():
+        for t in lista:
 
-        model.Add(
-            sum(asignacion[(i,t)] for t in tecnicos[(c,e)]) == 1
-        )
+            tareas=[(i,t) for i in range(n) if (i,t) in asignacion]
 
-    # capacidad tecnico
-    for (c,e),lista_tecnicos in tecnicos.items():
-
-        for t in lista_tecnicos:
-
-            tareas_tecnico = [
-                asignacion[(i,t)]
-                for i in range(tareas)
-                if (i,t) in asignacion
-            ]
-
-            if len(tareas_tecnico) > 0:
+            if tareas:
 
                 model.Add(
-                    sum(
-                        asignacion[(i,t)] * int(df_fragmentado.iloc[i]["duracion"])
-                        for i in range(tareas)
-                        if (i,t) in asignacion
-                    ) <= capacidad_tecnico
+                    sum(asignacion[(i,t)]*int(df.iloc[i]["duracion"]) for (i,t) in tareas) <= cap
                 )
 
-    # continuidad de actividad
-    grupos = df_fragmentado.groupby("grupo")
+    # continuidad
+    for g,grp in df.groupby("grupo"):
 
-    for grupo_id,grupo in grupos:
+        if dur_total[g] <= cap:
 
-        if duraciones[grupo_id] <= capacidad_tecnico:
+            idx=grp.index.tolist()
 
-            indices = grupo.index.tolist()
+            for i in range(len(idx)-1):
 
-            if len(indices) > 1:
+                a,b=idx[i],idx[i+1]
+                c=df.loc[a,"centro"]
+                e=df.loc[a,"especialidad"]
 
-                for i in range(len(indices)-1):
+                for t in tecnicos[(c,e)]:
 
-                    a = indices[i]
-                    b = indices[i+1]
-
-                    c = df_fragmentado.loc[a,"centro"]
-                    e = df_fragmentado.loc[a,"especialidad"]
-
-                    for t in tecnicos[(c,e)]:
-
-                        if (a,t) in asignacion and (b,t) in asignacion:
-
-                            model.Add(
-                                asignacion[(a,t)] == asignacion[(b,t)]
-                            )
+                    if (a,t) in asignacion and (b,t) in asignacion:
+                        model.Add(asignacion[(a,t)] == asignacion[(b,t)])
 
     # minimizar tecnicos
-    tecnico_usado = []
+    usados=[]
 
-    for (c,e),lista_tecnicos in tecnicos.items():
+    for (c,e),lista in tecnicos.items():
 
-        for t in lista_tecnicos:
+        for t in lista:
 
-            tareas_tecnico = [
-                asignacion[(i,t)]
-                for i in range(tareas)
-                if (i,t) in asignacion
-            ]
+            vars_t=[asignacion[(i,t)] for i in range(n) if (i,t) in asignacion]
 
-            if len(tareas_tecnico) > 0:
+            if vars_t:
 
-                usado = model.NewBoolVar(f"usado_{t}")
+                u=model.NewBoolVar(f"u_{t}")
+                model.AddMaxEquality(u,vars_t)
+                usados.append(u)
 
-                model.AddMaxEquality(usado, tareas_tecnico)
+    model.Minimize(sum(usados))
 
-                tecnico_usado.append(usado)
+    solver=cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds=60
 
-    model.Minimize(sum(tecnico_usado))
+    status=solver.Solve(model)
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 60
+    res=[]
 
-    status = solver.Solve(model)
+    if status in [cp_model.OPTIMAL,cp_model.FEASIBLE]:
 
-    resultado = []
+        for (i,t),v in asignacion.items():
+            if solver.Value(v)==1:
 
-    if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
+                r=df.iloc[i]
 
-        for (i,t),var in asignacion.items():
-
-            if solver.Value(var) == 1:
-
-                row = df_fragmentado.iloc[i]
-
-                resultado.append({
-                    "Tecnico": t,
-                    "Centro": row["centro"],
-                    "Especialidad": row["especialidad"],
-                    "Orden": row["orden"],
-                    "Actividad": row["actividad"],
-                    "Bloque": row["bloque"],
-                    "Duracion": row["duracion"]
+                res.append({
+                    "Tecnico":t,
+                    "Centro":r["centro"],
+                    "Especialidad":r["especialidad"],
+                    "Orden":r["orden"],
+                    "Actividad":r["actividad"],
+                    "Bloque":r["bloque"],
+                    "Duracion":r["duracion"]
                 })
 
-    return pd.DataFrame(resultado)
+    return pd.DataFrame(res)
+
+# ---------------------------------------------------------
+# CRONOGRAMA
+# ---------------------------------------------------------
+
+def cronograma(df, inicio):
+
+    if df.empty: return df
+
+    df=df.sort_values(["Tecnico","Orden","Bloque"])
+
+    out=[]
+
+    for t,g in df.groupby("Tecnico"):
+
+        tiempo=inicio
+        horas_dia=0
+        dia=1
+
+        for _,r in g.iterrows():
+
+            h=r["Duracion"]
+
+            while h>0:
+
+                disp=8-horas_dia
+
+                if disp==0:
+                    tiempo+=timedelta(hours=(24-horas_dia))
+                    horas_dia=0
+                    dia+=1
+                    disp=8
+
+                uso=min(disp,h)
+
+                ini=tiempo
+                fin=ini+timedelta(hours=uso)
+
+                out.append({
+                    **r,
+                    "Inicio":ini,
+                    "Fin":fin,
+                    "Dia":dia
+                })
+
+                tiempo=fin
+                horas_dia+=uso
+                h-=uso
+
+    return pd.DataFrame(out)
+
+# ---------------------------------------------------------
+# GANTT
+# ---------------------------------------------------------
+
+def gantt(df):
+
+    if df.empty: return
+
+    fig=px.timeline(
+        df,
+        x_start="Inicio",
+        x_end="Fin",
+        y="Tecnico",
+        color="Actividad"
+    )
+
+    fig.update_yaxes(autorange="reversed")
+    st.plotly_chart(fig, use_container_width=True)
+
 # ---------------------------------------------------------
 # EJECUCION
 # ---------------------------------------------------------
 
 if archivo1 and archivo2:
 
-    df = cargar_datos(archivo1,archivo2)
-
-    st.subheader("Datos SAP")
+    df=cargar_datos(archivo1,archivo2)
     st.dataframe(df)
 
-    df_act = descomponer_ordenes(df)
+    df2=descomponer(df)
+    df3=fragmentar(df2)
 
-    st.subheader("Actividades especialidad")
-    st.dataframe(df_act)
-
-    df_frag = fragmentar_actividades(df_act)
-
-    st.subheader("Bloques trabajo")
-    st.dataframe(df_frag)
-
-    st.subheader("Optimización")
-
-    df_opt = optimizar_paro(df_frag, horas_paro)
+    df_opt=optimizar(df3, horas_paro)
 
     if not df_opt.empty:
 
+        st.subheader("Asignación")
         st.dataframe(df_opt)
 
-        st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
+        st.success(f"Tecnicos: {df_opt['Tecnico'].nunique()}")
+
+        df_crono=cronograma(df_opt,inicio_paro)
+
+        st.subheader("Cronograma")
+        st.dataframe(df_crono)
+
+        gantt(df_crono)
 
     else:
-
-        st.error("El optimizador no encontró solución con las restricciones actuales")
+        st.error("Sin solución")
