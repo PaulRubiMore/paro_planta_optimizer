@@ -131,11 +131,8 @@ def optimizar(df, horas_paro):
 
     model=cp_model.CpModel()
 
-    # ventana operativa (quita 2h inicio y 2h final)
-    horas_efectivas = max(0, horas_paro - 4)
-
-    dias = ceil(horas_efectivas / 24)
-    cap = dias * 8
+    dias=ceil(horas_paro/24)
+    cap=dias*8
 
     df["grupo"]=df["orden"].astype(str)+"_"+df["actividad"].astype(str)
     dur_total=df.groupby("grupo")["duracion"].sum()
@@ -240,14 +237,16 @@ def optimizar(df, horas_paro):
     return pd.DataFrame(res)
 
 # ---------------------------------------------------------
-# CRONOGRAMA
+# CRONOGRAMA CON HORAS MUERTAS
 # ---------------------------------------------------------
 
-def cronograma(df, inicio, horas_paro):
+def cronograma(df, inicio_paro, horas_paro):
 
-    if df.empty: return df
+    if df.empty:
+        return df
 
-    fin_paro = inicio + timedelta(hours=horas_paro - 2)
+    inicio_real = inicio_paro + timedelta(hours=2)
+    fin_real = inicio_paro + timedelta(hours=horas_paro - 2)
 
     df=df.sort_values(["Tecnico","Orden","Bloque"])
 
@@ -255,7 +254,7 @@ def cronograma(df, inicio, horas_paro):
 
     for t,g in df.groupby("Tecnico"):
 
-        tiempo=inicio
+        tiempo=inicio_real
         horas_dia=0
         dia=1
 
@@ -264,6 +263,9 @@ def cronograma(df, inicio, horas_paro):
             h=r["Duracion"]
 
             while h>0:
+
+                if tiempo >= fin_real:
+                    break
 
                 disp=8-horas_dia
 
@@ -275,11 +277,14 @@ def cronograma(df, inicio, horas_paro):
 
                 uso=min(disp,h)
 
+                if tiempo + timedelta(hours=uso) > fin_real:
+                    uso=(fin_real-tiempo).total_seconds()/3600
+
+                if uso<=0:
+                    break
+
                 ini=tiempo
                 fin=ini+timedelta(hours=uso)
-
-                if fin > fin_paro:
-                    break
 
                 out.append({
                     **r,
@@ -298,9 +303,14 @@ def cronograma(df, inicio, horas_paro):
 # GANTT
 # ---------------------------------------------------------
 
-def gantt(df):
+def gantt(df, inicio_paro, horas_paro):
 
-    if df.empty: return
+    if df.empty:
+        return
+
+    inicio_real = inicio_paro + timedelta(hours=2)
+    fin_real = inicio_paro + timedelta(hours=horas_paro - 2)
+    fin_total = inicio_paro + timedelta(hours=horas_paro)
 
     fig=px.timeline(
         df,
@@ -308,6 +318,24 @@ def gantt(df):
         x_end="Fin",
         y="Tecnico",
         color="Actividad"
+    )
+
+    fig.add_vrect(
+        x0=inicio_paro,
+        x1=inicio_real,
+        fillcolor="red",
+        opacity=0.2,
+        line_width=0,
+        annotation_text="Arranque"
+    )
+
+    fig.add_vrect(
+        x0=fin_real,
+        x1=fin_total,
+        fillcolor="red",
+        opacity=0.2,
+        line_width=0,
+        annotation_text="Cierre"
     )
 
     fig.update_yaxes(autorange="reversed")
@@ -332,14 +360,12 @@ if archivo1 and archivo2:
 
         st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
 
-        inicio_real = inicio_paro + timedelta(hours=2)
-
-        df_crono=cronograma(df_opt, inicio_real, horas_paro)
+        df_crono=cronograma(df_opt, inicio_paro, horas_paro)
 
         st.subheader("Cronograma")
         st.dataframe(df_crono)
 
-        gantt(df_crono)
+        gantt(df_crono, inicio_paro, horas_paro)
 
     else:
         st.error("Sin solución")
