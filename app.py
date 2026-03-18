@@ -131,8 +131,11 @@ def optimizar(df, horas_paro):
 
     model=cp_model.CpModel()
 
-    dias=ceil(horas_paro/24)
-    cap=dias*8
+    # ventana operativa (quita 2h inicio y 2h final)
+    horas_efectivas = max(0, horas_paro - 4)
+
+    dias = ceil(horas_efectivas / 24)
+    cap = dias * 8
 
     df["grupo"]=df["orden"].astype(str)+"_"+df["actividad"].astype(str)
     dur_total=df.groupby("grupo")["duracion"].sum()
@@ -174,7 +177,7 @@ def optimizar(df, horas_paro):
                     sum(asignacion[(i,t)]*int(df.iloc[i]["duracion"]) for (i,t) in tareas) <= cap
                 )
 
-    # continuidad FUERTE (misma persona)
+    # continuidad fuerte
     for g,grp in df.groupby("grupo"):
 
         if dur_total[g] <= cap:
@@ -240,9 +243,11 @@ def optimizar(df, horas_paro):
 # CRONOGRAMA
 # ---------------------------------------------------------
 
-def cronograma(df, inicio):
+def cronograma(df, inicio, horas_paro):
 
     if df.empty: return df
+
+    fin_paro = inicio + timedelta(hours=horas_paro - 2)
 
     df=df.sort_values(["Tecnico","Orden","Bloque"])
 
@@ -272,6 +277,9 @@ def cronograma(df, inicio):
 
                 ini=tiempo
                 fin=ini+timedelta(hours=uso)
+
+                if fin > fin_paro:
+                    break
 
                 out.append({
                     **r,
@@ -324,7 +332,9 @@ if archivo1 and archivo2:
 
         st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
 
-        df_crono=cronograma(df_opt,inicio_paro)
+        inicio_real = inicio_paro + timedelta(hours=2)
+
+        df_crono=cronograma(df_opt, inicio_real, horas_paro)
 
         st.subheader("Cronograma")
         st.dataframe(df_crono)
