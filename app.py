@@ -245,57 +245,90 @@ def cronograma(df, inicio_paro, horas_paro):
     if df.empty:
         return df
 
-    inicio_real = inicio_paro + timedelta(hours=2)
-    fin_real = inicio_paro + timedelta(hours=horas_paro - 2)
+    from datetime import timedelta
 
-    df=df.sort_values(["Tecnico","Orden","Bloque"])
+    dias = ceil(horas_paro / 24)
+    fin_paro = inicio_paro + timedelta(hours=horas_paro)
 
-    out=[]
+    df = df.sort_values(["Tecnico","Orden","Bloque"])
 
-    for t,g in df.groupby("Tecnico"):
+    out = []
 
-        tiempo=inicio_real
-        horas_dia=0
-        dia=1
+    for t, g in df.groupby("Tecnico"):
 
-        for _,r in g.iterrows():
+        dia = 1
+        horas_dia = 0
 
-            h=r["Duracion"]
+        # inicio del primer día (con 2h muertas)
+        tiempo = inicio_paro + timedelta(hours=2)
 
-            while h>0:
+        for _, r in g.iterrows():
 
-                if tiempo >= fin_real:
-                    break
+            h = r["Duracion"]
 
-                disp=8-horas_dia
+            while h > 0:
 
-                if disp==0:
-                    tiempo+=timedelta(hours=(24-horas_dia))
-                    horas_dia=0
-                    dia+=1
-                    disp=8
+                # calcular inicio del día actual (siempre misma hora base)
+                inicio_dia = inicio_paro + timedelta(days=(dia-1))
 
-                uso=min(disp,h)
+                # ventanas por tipo de día
+                if dia == 1:
+                    inicio_jornada = inicio_dia + timedelta(hours=2)
+                    fin_jornada = inicio_dia + timedelta(hours=24)
 
-                if tiempo + timedelta(hours=uso) > fin_real:
-                    uso=(fin_real-tiempo).total_seconds()/3600
+                elif dia == dias:
+                    inicio_jornada = inicio_dia
+                    fin_jornada = fin_paro - timedelta(hours=2)
 
-                if uso<=0:
-                    break
+                else:
+                    inicio_jornada = inicio_dia
+                    fin_jornada = inicio_dia + timedelta(hours=24)
 
-                ini=tiempo
-                fin=ini+timedelta(hours=uso)
+                # si estamos fuera de la jornada → saltar al inicio válido
+                if tiempo < inicio_jornada:
+                    tiempo = inicio_jornada
+                    horas_dia = 0
+
+                if tiempo >= fin_jornada:
+                    # pasar al siguiente día
+                    dia += 1
+                    horas_dia = 0
+                    tiempo = inicio_paro + timedelta(days=(dia-1))
+                    continue
+
+                disp = 8 - horas_dia
+
+                if disp == 0:
+                    dia += 1
+                    horas_dia = 0
+                    tiempo = inicio_paro + timedelta(days=(dia-1))
+                    continue
+
+                uso = min(disp, h)
+
+                # no sobrepasar fin de jornada
+                if tiempo + timedelta(hours=uso) > fin_jornada:
+                    uso = (fin_jornada - tiempo).total_seconds() / 3600
+
+                if uso <= 0:
+                    dia += 1
+                    horas_dia = 0
+                    tiempo = inicio_paro + timedelta(days=(dia-1))
+                    continue
+
+                ini = tiempo
+                fin = ini + timedelta(hours=uso)
 
                 out.append({
                     **r,
-                    "Inicio":ini,
-                    "Fin":fin,
-                    "Dia":dia
+                    "Inicio": ini,
+                    "Fin": fin,
+                    "Dia": dia
                 })
 
-                tiempo=fin
-                horas_dia+=uso
-                h-=uso
+                tiempo = fin
+                horas_dia += uso
+                h -= uso
 
     return pd.DataFrame(out)
 
@@ -308,11 +341,12 @@ def gantt(df, inicio_paro, horas_paro):
     if df.empty:
         return
 
-    inicio_real = inicio_paro + timedelta(hours=2)
-    fin_real = inicio_paro + timedelta(hours=horas_paro - 2)
-    fin_total = inicio_paro + timedelta(hours=horas_paro)
+    from datetime import timedelta
 
-    fig=px.timeline(
+    dias = ceil(horas_paro / 24)
+    fin_paro = inicio_paro + timedelta(hours=horas_paro)
+
+    fig = px.timeline(
         df,
         x_start="Inicio",
         x_end="Fin",
@@ -320,18 +354,22 @@ def gantt(df, inicio_paro, horas_paro):
         color="Actividad"
     )
 
+    # día 1 (arranque)
     fig.add_vrect(
         x0=inicio_paro,
-        x1=inicio_real,
+        x1=inicio_paro + timedelta(hours=2),
         fillcolor="red",
         opacity=0.2,
         line_width=0,
         annotation_text="Arranque"
     )
 
+    # último día (cierre)
+    inicio_ultimo_dia = inicio_paro + timedelta(days=(dias-1))
+
     fig.add_vrect(
-        x0=fin_real,
-        x1=fin_total,
+        x0=fin_paro - timedelta(hours=2),
+        x1=fin_paro,
         fillcolor="red",
         opacity=0.2,
         line_width=0,
