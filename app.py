@@ -323,19 +323,19 @@ def gantt(df, inicio_paro, horas_paro):
     fig.add_vrect(
         x0=inicio_paro,
         x1=inicio_real,
-        fillcolor="red",
+        fillcolor="black",
         opacity=0.2,
         line_width=0,
-        annotation_text="Arranque"
+        annotation_text="Desconexion"
     )
 
     fig.add_vrect(
         x0=fin_real,
         x1=fin_total,
-        fillcolor="red",
+        fillcolor="black",
         opacity=0.2,
         line_width=0,
-        annotation_text="Cierre"
+        annotation_text="Reconexion"
     )
 
     fig.update_yaxes(autorange="reversed")
