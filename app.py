@@ -258,9 +258,7 @@ def cronograma(df, inicio_paro, horas_paro):
 
         dia = 1
         horas_dia = 0
-
-        # inicio del primer día (con 2h muertas)
-        tiempo = inicio_paro + timedelta(hours=2)
+        tiempo = inicio_paro + timedelta(hours=2)  # arranque día 1
 
         for _, r in g.iterrows():
 
@@ -268,10 +266,9 @@ def cronograma(df, inicio_paro, horas_paro):
 
             while h > 0:
 
-                # calcular inicio del día actual (siempre misma hora base)
                 inicio_dia = inicio_paro + timedelta(days=(dia-1))
 
-                # ventanas por tipo de día
+                # ventanas del día
                 if dia == 1:
                     inicio_jornada = inicio_dia + timedelta(hours=2)
                     fin_jornada = inicio_dia + timedelta(hours=24)
@@ -284,16 +281,25 @@ def cronograma(df, inicio_paro, horas_paro):
                     inicio_jornada = inicio_dia
                     fin_jornada = inicio_dia + timedelta(hours=24)
 
-                # si estamos fuera de la jornada → saltar al inicio válido
+                # almuerzo
+                inicio_almuerzo = inicio_dia + timedelta(hours=12)
+                fin_almuerzo = inicio_dia + timedelta(hours=13)
+
+                # ajustar inicio de jornada
                 if tiempo < inicio_jornada:
                     tiempo = inicio_jornada
                     horas_dia = 0
 
+                # saltar si pasa jornada
                 if tiempo >= fin_jornada:
-                    # pasar al siguiente día
                     dia += 1
                     horas_dia = 0
                     tiempo = inicio_paro + timedelta(days=(dia-1))
+                    continue
+
+                # saltar almuerzo si cae dentro
+                if inicio_almuerzo <= tiempo < fin_almuerzo:
+                    tiempo = fin_almuerzo
                     continue
 
                 disp = 8 - horas_dia
@@ -306,14 +312,16 @@ def cronograma(df, inicio_paro, horas_paro):
 
                 uso = min(disp, h)
 
-                # no sobrepasar fin de jornada
+                # evitar cruzar almuerzo
+                if tiempo < inicio_almuerzo and tiempo + timedelta(hours=uso) > inicio_almuerzo:
+                    uso = (inicio_almuerzo - tiempo).total_seconds() / 3600
+
+                # evitar pasar fin jornada
                 if tiempo + timedelta(hours=uso) > fin_jornada:
                     uso = (fin_jornada - tiempo).total_seconds() / 3600
 
                 if uso <= 0:
-                    dia += 1
-                    horas_dia = 0
-                    tiempo = inicio_paro + timedelta(days=(dia-1))
+                    tiempo += timedelta(minutes=1)
                     continue
 
                 ini = tiempo
@@ -354,7 +362,7 @@ def gantt(df, inicio_paro, horas_paro):
         color="Actividad"
     )
 
-    # día 1 (arranque)
+    # arranque
     fig.add_vrect(
         x0=inicio_paro,
         x1=inicio_paro + timedelta(hours=2),
@@ -364,9 +372,7 @@ def gantt(df, inicio_paro, horas_paro):
         annotation_text="Arranque"
     )
 
-    # último día (cierre)
-    inicio_ultimo_dia = inicio_paro + timedelta(days=(dias-1))
-
+    # cierre
     fig.add_vrect(
         x0=fin_paro - timedelta(hours=2),
         x1=fin_paro,
@@ -375,6 +381,19 @@ def gantt(df, inicio_paro, horas_paro):
         line_width=0,
         annotation_text="Cierre"
     )
+
+    # almuerzos por día
+    for d in range(dias):
+        inicio_dia = inicio_paro + timedelta(days=d)
+
+        fig.add_vrect(
+            x0=inicio_dia + timedelta(hours=12),
+            x1=inicio_dia + timedelta(hours=13),
+            fillcolor="orange",
+            opacity=0.2,
+            line_width=0,
+            annotation_text="Almuerzo"
+        )
 
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
