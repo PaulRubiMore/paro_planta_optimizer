@@ -363,11 +363,11 @@ def gantt(df_filtrado, inicio_paro, horas_paro):
 
 if archivo1 and archivo2:
 
-    df=cargar_datos(archivo1,archivo2)
-    df2=descomponer(df)
-    df3=fragmentar(df2)
+    df = cargar_datos(archivo1, archivo2)
+    df2 = descomponer(df)
+    df3 = fragmentar(df2)
 
-    df_opt=optimizar(df3, horas_paro)
+    df_opt = optimizar(df3, horas_paro)
 
     if not df_opt.empty:
 
@@ -376,12 +376,28 @@ if archivo1 and archivo2:
 
         st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
 
-        df_crono=cronograma(df_opt, inicio_paro, horas_paro)
+        df_crono = cronograma(df_opt, inicio_paro, horas_paro)
 
         st.subheader("Cronograma")
         st.dataframe(df_crono)
 
-        gantt(df_crono, inicio_paro, horas_paro)
+        # -----------------------------
+        # FILTROS (AQUI, no afuera)
+        # -----------------------------
+        centros = sorted(df_crono["Centro"].unique())
+        centro_sel = st.selectbox("Centro", centros)
+
+        df_filtrado = df_crono[df_crono["Centro"] == centro_sel]
+
+        tecnicos = sorted(df_filtrado["Tecnico"].unique())
+        tecnicos_sel = st.multiselect("Técnicos", tecnicos, default=tecnicos)
+
+        df_filtrado = df_filtrado[df_filtrado["Tecnico"].isin(tecnicos_sel)]
+
+        # -----------------------------
+        # GANTT FILTRADO
+        # -----------------------------
+        gantt(df_filtrado, inicio_paro, horas_paro)
 
     else:
         st.error("Sin solución")
