@@ -1,4 +1,4 @@
-import streamlit as st
+
 import pandas as pd
 from datetime import datetime, timedelta
 from math import ceil
@@ -303,17 +303,7 @@ def cronograma(df, inicio_paro, horas_paro):
 # GANTT
 # ---------------------------------------------------------
 
-centros = sorted(df_crono["Centro"].unique())
-centro_sel = st.selectbox("Centro", centros)
-
-df_filtrado = df_crono[df_crono["Centro"] == centro_sel]
-
-tecnicos = sorted(df_filtrado["Tecnico"].unique())
-tecnicos_sel = st.multiselect("Técnicos", tecnicos, default=tecnicos)
-
-df_filtrado = df_filtrado[df_filtrado["Tecnico"].isin(tecnicos_sel)]
-
-def gantt(df_filtrado, inicio_paro, horas_paro):
+def gantt(df, inicio_paro, horas_paro):
 
     if df.empty:
         return
@@ -348,12 +338,6 @@ def gantt(df_filtrado, inicio_paro, horas_paro):
         annotation_text="Reconexion"
     )
 
-    fig.update_layout(
-    yaxis_title="Técnicos",
-    xaxis_title="Tiempo",
-    legend_title="Actividad",
-    height=600
-    )
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -363,11 +347,11 @@ def gantt(df_filtrado, inicio_paro, horas_paro):
 
 if archivo1 and archivo2:
 
-    df = cargar_datos(archivo1, archivo2)
-    df2 = descomponer(df)
-    df3 = fragmentar(df2)
+    df=cargar_datos(archivo1,archivo2)
+    df2=descomponer(df)
+    df3=fragmentar(df2)
 
-    df_opt = optimizar(df3, horas_paro)
+    df_opt=optimizar(df3, horas_paro)
 
     if not df_opt.empty:
 
@@ -376,28 +360,12 @@ if archivo1 and archivo2:
 
         st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
 
-        df_crono = cronograma(df_opt, inicio_paro, horas_paro)
+        df_crono=cronograma(df_opt, inicio_paro, horas_paro)
 
         st.subheader("Cronograma")
         st.dataframe(df_crono)
 
-        # -----------------------------
-        # FILTROS (AQUI, no afuera)
-        # -----------------------------
-        centros = sorted(df_crono["Centro"].unique())
-        centro_sel = st.selectbox("Centro", centros)
-
-        df_filtrado = df_crono[df_crono["Centro"] == centro_sel]
-
-        tecnicos = sorted(df_filtrado["Tecnico"].unique())
-        tecnicos_sel = st.multiselect("Técnicos", tecnicos, default=tecnicos)
-
-        df_filtrado = df_filtrado[df_filtrado["Tecnico"].isin(tecnicos_sel)]
-
-        # -----------------------------
-        # GANTT FILTRADO
-        # -----------------------------
-        gantt(df_filtrado, inicio_paro, horas_paro)
+        gantt(df_crono, inicio_paro, horas_paro)
 
     else:
         st.error("Sin solución")
