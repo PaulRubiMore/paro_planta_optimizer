@@ -30,13 +30,13 @@ def limpiar_columnas(df):
     return df
 
 # ---------------------------------------------------------
-# CARGA (ROBUSTA)
+# CARGA
 # ---------------------------------------------------------
 
 def cargar_datos(a1,a2):
 
     df1 = limpiar_columnas(pd.read_excel(a1))
-    df2 = limpiar_columnas(pd.read_excel(a2))  # preparado para futuro uso zonas
+    df2 = limpiar_columnas(pd.read_excel(a2))
 
     columnas_requeridas = [
         "Centro planificación","Actividades","Orden",
@@ -48,7 +48,6 @@ def cargar_datos(a1,a2):
             st.error(f"Falta columna: {col}")
             st.stop()
 
-    # detectar tiempo
     tiempo_col = None
     for col in df1.columns:
         if "TIEMPO" in col.upper():
@@ -78,7 +77,7 @@ def cargar_datos(a1,a2):
     return df
 
 # ---------------------------------------------------------
-# DESCOMPOSICION (SIN PERDIDA)
+# DESCOMPOSICION
 # ---------------------------------------------------------
 
 def descomponer(df):
@@ -149,7 +148,7 @@ def fragmentar(df):
     return pd.DataFrame(out)
 
 # ---------------------------------------------------------
-# OPTIMIZADOR (EFICIENTE)
+# OPTIMIZADOR
 # ---------------------------------------------------------
 
 def optimizar(df, horas_paro):
@@ -184,14 +183,12 @@ def optimizar(df, horas_paro):
         for t in tecnicos[(c,e)]:
             asignacion[(i,t)]=model.NewBoolVar(f"a_{i}_{t}")
 
-    # asignacion unica
     for i in range(n):
         c=df.iloc[i]["centro"]
         e=df.iloc[i]["especialidad"]
 
         model.Add(sum(asignacion[(i,t)] for t in tecnicos[(c,e)])==1)
 
-    # capacidad
     for (c,e),lista in tecnicos.items():
         for t in lista:
 
@@ -202,7 +199,6 @@ def optimizar(df, horas_paro):
                     sum(asignacion[(i,t)]*int(df.iloc[i]["duracion"]) for (i,t) in tareas) <= cap
                 )
 
-    # continuidad
     for g,grp in df.groupby("grupo"):
 
         if dur_total[g] <= cap:
@@ -219,7 +215,6 @@ def optimizar(df, horas_paro):
                     if (i,t) in asignacion:
                         model.Add(asignacion[(i,t)] == selector[t])
 
-    # minimizar tecnicos
     usados=[]
 
     for (c,e),lista in tecnicos.items():
@@ -261,7 +256,7 @@ def optimizar(df, horas_paro):
     return pd.DataFrame(res)
 
 # ---------------------------------------------------------
-# CRONOGRAMA (CON ALMUERZO + BORDES)
+# CRONOGRAMA
 # ---------------------------------------------------------
 
 def cronograma(df, inicio_paro, horas_paro):
@@ -291,7 +286,6 @@ def cronograma(df, inicio_paro, horas_paro):
                 if tiempo >= fin_real:
                     break
 
-                # ALMUERZO
                 if 12 <= tiempo.hour < 13:
                     tiempo = tiempo.replace(hour=13, minute=0)
                     continue
@@ -371,7 +365,7 @@ def gantt(df, inicio_paro, horas_paro):
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------
-# EJECUCION
+# EJECUCION + FILTRO CENTRO
 # ---------------------------------------------------------
 
 if archivo1 and archivo2:
@@ -392,12 +386,24 @@ if archivo1 and archivo2:
         df_crono=cronograma(df_opt, inicio_paro, horas_paro)
 
         st.subheader("Cronograma")
-        st.dataframe(df_crono)
 
-        if df_crono.empty:
-            st.warning("Cronograma vacío")
+        # -------------------------------
+        # FILTRO POR CENTRO
+        # -------------------------------
+        centros = sorted(df_crono["Centro"].dropna().unique())
+        centro_sel = st.selectbox("Filtrar por Centro", ["Todos"] + centros)
+
+        if centro_sel != "Todos":
+            df_crono_filtrado = df_crono[df_crono["Centro"] == centro_sel]
         else:
-            gantt(df_crono, inicio_paro, horas_paro)
+            df_crono_filtrado = df_crono.copy()
+
+        st.dataframe(df_crono_filtrado)
+
+        if df_crono_filtrado.empty:
+            st.warning("Sin datos para el centro seleccionado")
+        else:
+            gantt(df_crono_filtrado, inicio_paro, horas_paro)
 
     else:
         st.error("Sin solución")
