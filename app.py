@@ -303,7 +303,17 @@ def cronograma(df, inicio_paro, horas_paro):
 # GANTT
 # ---------------------------------------------------------
 
-def gantt(df, inicio_paro, horas_paro):
+centros = sorted(df_crono["Centro"].unique())
+centro_sel = st.selectbox("Centro", centros)
+
+df_filtrado = df_crono[df_crono["Centro"] == centro_sel]
+
+tecnicos = sorted(df_filtrado["Tecnico"].unique())
+tecnicos_sel = st.multiselect("Técnicos", tecnicos, default=tecnicos)
+
+df_filtrado = df_filtrado[df_filtrado["Tecnico"].isin(tecnicos_sel)]
+
+def gantt(df_filtrado, inicio_paro, horas_paro):
 
     if df.empty:
         return
@@ -338,6 +348,12 @@ def gantt(df, inicio_paro, horas_paro):
         annotation_text="Reconexion"
     )
 
+    fig.update_layout(
+    yaxis_title="Técnicos",
+    xaxis_title="Tiempo",
+    legend_title="Actividad",
+    height=600
+    )
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
 
