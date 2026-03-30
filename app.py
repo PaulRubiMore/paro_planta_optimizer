@@ -30,39 +30,55 @@ def limpiar_columnas(df):
     return df
 
 # ---------------------------------------------------------
-# CARGA
+# CARGA (ROBUSTA)
 # ---------------------------------------------------------
 
 def cargar_datos(a1,a2):
 
     df1 = limpiar_columnas(pd.read_excel(a1))
-    df2 = limpiar_columnas(pd.read_excel(a2))
+    df2 = limpiar_columnas(pd.read_excel(a2))  # preparado para futuro uso zonas
 
+    columnas_requeridas = [
+        "Centro planificación","Actividades","Orden",
+        "ESPECIALIDAD","EJECUTOR"
+    ]
+
+    for col in columnas_requeridas:
+        if col not in df1.columns:
+            st.error(f"Falta columna: {col}")
+            st.stop()
+
+    # detectar tiempo
+    tiempo_col = None
     for col in df1.columns:
         if "TIEMPO" in col.upper():
-            df1 = df1.rename(columns={col:"TIEMPO (Hrs)"})
+            tiempo_col = col
+            break
+
+    if tiempo_col is None:
+        st.error("No se encontró columna de TIEMPO")
+        st.stop()
+
+    df1 = df1.rename(columns={tiempo_col:"duracion_h"})
 
     df1 = df1[df1["EJECUTOR"].str.contains("massy",case=False,na=False)]
 
-    df1 = df1[[
+    df = df1[[
         "Centro planificación","Actividades","Orden",
-        "TIEMPO (Hrs)","ESPECIALIDAD"
-    ]]
-
-    df = df1.rename(columns={
+        "duracion_h","ESPECIALIDAD"
+    ]].rename(columns={
         "Orden":"orden",
         "Actividades":"actividad",
-        "TIEMPO (Hrs)":"duracion_h",
         "ESPECIALIDAD":"especialidad",
         "Centro planificación":"centro"
     })
 
-    df["duracion_h"] = df["duracion_h"].fillna(1)
+    df["duracion_h"] = pd.to_numeric(df["duracion_h"], errors="coerce").fillna(1)
 
     return df
 
 # ---------------------------------------------------------
-# DESCOMPOSICION
+# DESCOMPOSICION (SIN PERDIDA)
 # ---------------------------------------------------------
 
 def descomponer(df):
@@ -72,22 +88,31 @@ def descomponer(df):
     for _,r in df.iterrows():
 
         especs = str(r["especialidad"]).replace("/",",").split(",")
-        especs=[e.strip().upper() for e in especs]
+        especs=[e.strip().upper() for e in especs if e.strip()]
 
-        total=r["duracion_h"]
+        total = float(r["duracion_h"])
 
         if len(especs)==3: p=[0.5,0.3,0.2]
         elif len(especs)==2: p=[0.6,0.4]
         else: p=[1]
 
-        for e,pp in zip(especs,p):
+        duraciones = [int(total*pp) for pp in p]
+        diff = int(total - sum(duraciones))
+
+        if duraciones:
+            duraciones[0] += diff
+
+        for e,d in zip(especs,duraciones):
+
+            if d <= 0:
+                continue
 
             out.append({
                 "orden":r["orden"],
                 "actividad":r["actividad"],
                 "centro":r["centro"],
                 "especialidad":e,
-                "duracion_h":round(total*pp)
+                "duracion_h":d
             })
 
     return pd.DataFrame(out)
@@ -102,7 +127,7 @@ def fragmentar(df):
 
     for _,r in df.iterrows():
 
-        h=r["duracion_h"]
+        h=int(r["duracion_h"])
         b=1
 
         while h>0:
@@ -124,7 +149,7 @@ def fragmentar(df):
     return pd.DataFrame(out)
 
 # ---------------------------------------------------------
-# OPTIMIZADOR
+# OPTIMIZADOR (EFICIENTE)
 # ---------------------------------------------------------
 
 def optimizar(df, horas_paro):
@@ -143,7 +168,11 @@ def optimizar(df, horas_paro):
 
     for _,r in combos.iterrows():
         c,e=r["centro"],r["especialidad"]
-        tecnicos[(c,e)]=[f"{c}_{e}_T{i}" for i in range(1,101)]
+
+        carga = df[(df["centro"]==c) & (df["especialidad"]==e)]["duracion"].sum()
+        max_tecnicos = ceil(carga / cap) + 2
+
+        tecnicos[(c,e)] = [f"{c}_{e}_T{i}" for i in range(1, max_tecnicos+1)]
 
     asignacion={}
     n=len(df)
@@ -155,26 +184,25 @@ def optimizar(df, horas_paro):
         for t in tecnicos[(c,e)]:
             asignacion[(i,t)]=model.NewBoolVar(f"a_{i}_{t}")
 
-    # cada bloque tiene tecnico
+    # asignacion unica
     for i in range(n):
         c=df.iloc[i]["centro"]
         e=df.iloc[i]["especialidad"]
 
         model.Add(sum(asignacion[(i,t)] for t in tecnicos[(c,e)])==1)
 
-    # capacidad tecnico
+    # capacidad
     for (c,e),lista in tecnicos.items():
         for t in lista:
 
             tareas=[(i,t) for i in range(n) if (i,t) in asignacion]
 
             if tareas:
-
                 model.Add(
                     sum(asignacion[(i,t)]*int(df.iloc[i]["duracion"]) for (i,t) in tareas) <= cap
                 )
 
-    # continuidad fuerte
+    # continuidad
     for g,grp in df.groupby("grupo"):
 
         if dur_total[g] <= cap:
@@ -184,12 +212,10 @@ def optimizar(df, horas_paro):
             e=df.loc[idx[0],"especialidad"]
 
             selector={t:model.NewBoolVar(f"sel_{g}_{t}") for t in tecnicos[(c,e)]}
-
             model.Add(sum(selector[t] for t in tecnicos[(c,e)])==1)
 
             for i in idx:
                 for t in tecnicos[(c,e)]:
-
                     if (i,t) in asignacion:
                         model.Add(asignacion[(i,t)] == selector[t])
 
@@ -197,13 +223,11 @@ def optimizar(df, horas_paro):
     usados=[]
 
     for (c,e),lista in tecnicos.items():
-
         for t in lista:
 
             vars_t=[asignacion[(i,t)] for i in range(n) if (i,t) in asignacion]
 
             if vars_t:
-
                 u=model.NewBoolVar(f"u_{t}")
                 model.AddMaxEquality(u,vars_t)
                 usados.append(u)
@@ -217,7 +241,7 @@ def optimizar(df, horas_paro):
 
     res=[]
 
-    if status in [cp_model.OPTIMAL,cp_model.FEASIBLE]:
+    if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
 
         for (i,t),v in asignacion.items():
             if solver.Value(v)==1:
@@ -237,7 +261,7 @@ def optimizar(df, horas_paro):
     return pd.DataFrame(res)
 
 # ---------------------------------------------------------
-# CRONOGRAMA CON HORAS MUERTAS
+# CRONOGRAMA (CON ALMUERZO + BORDES)
 # ---------------------------------------------------------
 
 def cronograma(df, inicio_paro, horas_paro):
@@ -267,18 +291,23 @@ def cronograma(df, inicio_paro, horas_paro):
                 if tiempo >= fin_real:
                     break
 
+                # ALMUERZO
+                if 12 <= tiempo.hour < 13:
+                    tiempo = tiempo.replace(hour=13, minute=0)
+                    continue
+
                 disp=8-horas_dia
 
-                if disp==0:
+                if disp<=0:
                     tiempo+=timedelta(hours=(24-horas_dia))
                     horas_dia=0
                     dia+=1
-                    disp=8
+                    continue
 
                 uso=min(disp,h)
 
                 if tiempo + timedelta(hours=uso) > fin_real:
-                    uso=(fin_real-tiempo).total_seconds()/3600
+                    uso=max(0,(fin_real-tiempo).total_seconds()/3600)
 
                 if uso<=0:
                     break
@@ -365,7 +394,10 @@ if archivo1 and archivo2:
         st.subheader("Cronograma")
         st.dataframe(df_crono)
 
-        gantt(df_crono, inicio_paro, horas_paro)
+        if df_crono.empty:
+            st.warning("Cronograma vacío")
+        else:
+            gantt(df_crono, inicio_paro, horas_paro)
 
     else:
         st.error("Sin solución")
