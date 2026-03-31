@@ -33,30 +33,16 @@ def limpiar_columnas(df):
 # CARGA
 # ---------------------------------------------------------
 
+@st.cache_data
 def cargar_datos(a1,a2):
 
     df1 = limpiar_columnas(pd.read_excel(a1))
-    df2 = limpiar_columnas(pd.read_excel(a2))
-
-    columnas_requeridas = [
-        "Centro planificación","Actividades","Orden",
-        "ESPECIALIDAD","EJECUTOR"
-    ]
-
-    for col in columnas_requeridas:
-        if col not in df1.columns:
-            st.error(f"Falta columna: {col}")
-            st.stop()
 
     tiempo_col = None
     for col in df1.columns:
         if "TIEMPO" in col.upper():
             tiempo_col = col
             break
-
-    if tiempo_col is None:
-        st.error("No se encontró columna de TIEMPO")
-        st.stop()
 
     df1 = df1.rename(columns={tiempo_col:"duracion_h"})
 
@@ -80,6 +66,7 @@ def cargar_datos(a1,a2):
 # DESCOMPOSICION
 # ---------------------------------------------------------
 
+@st.cache_data
 def descomponer(df):
 
     out=[]
@@ -120,6 +107,7 @@ def descomponer(df):
 # FRAGMENTAR
 # ---------------------------------------------------------
 
+@st.cache_data
 def fragmentar(df):
 
     out=[]
@@ -151,6 +139,7 @@ def fragmentar(df):
 # OPTIMIZADOR
 # ---------------------------------------------------------
 
+@st.cache_data
 def optimizar(df, horas_paro):
 
     model=cp_model.CpModel()
@@ -199,22 +188,6 @@ def optimizar(df, horas_paro):
                     sum(asignacion[(i,t)]*int(df.iloc[i]["duracion"]) for (i,t) in tareas) <= cap
                 )
 
-    for g,grp in df.groupby("grupo"):
-
-        if dur_total[g] <= cap:
-
-            idx=grp.index.tolist()
-            c=df.loc[idx[0],"centro"]
-            e=df.loc[idx[0],"especialidad"]
-
-            selector={t:model.NewBoolVar(f"sel_{g}_{t}") for t in tecnicos[(c,e)]}
-            model.Add(sum(selector[t] for t in tecnicos[(c,e)])==1)
-
-            for i in idx:
-                for t in tecnicos[(c,e)]:
-                    if (i,t) in asignacion:
-                        model.Add(asignacion[(i,t)] == selector[t])
-
     usados=[]
 
     for (c,e),lista in tecnicos.items():
@@ -259,6 +232,7 @@ def optimizar(df, horas_paro):
 # CRONOGRAMA
 # ---------------------------------------------------------
 
+@st.cache_data
 def cronograma(df, inicio_paro, horas_paro):
 
     if df.empty:
@@ -343,67 +317,54 @@ def gantt(df, inicio_paro, horas_paro):
         color="Actividad"
     )
 
-    fig.add_vrect(
-        x0=inicio_paro,
-        x1=inicio_real,
-        fillcolor="black",
-        opacity=0.2,
-        line_width=0,
-        annotation_text="Desconexion"
-    )
-
-    fig.add_vrect(
-        x0=fin_real,
-        x1=fin_total,
-        fillcolor="black",
-        opacity=0.2,
-        line_width=0,
-        annotation_text="Reconexion"
-    )
+    fig.add_vrect(x0=inicio_paro,x1=inicio_real,fillcolor="black",opacity=0.2,line_width=0)
+    fig.add_vrect(x0=fin_real,x1=fin_total,fillcolor="black",opacity=0.2,line_width=0)
 
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------------
-# EJECUCION + FILTRO CENTRO
+# EJECUCION
 # ---------------------------------------------------------
 
 if archivo1 and archivo2:
 
-    df=cargar_datos(archivo1,archivo2)
-    df2=descomponer(df)
-    df3=fragmentar(df2)
+    df = cargar_datos(archivo1,archivo2)
+    df2 = descomponer(df)
+    df3 = fragmentar(df2)
 
-    df_opt=optimizar(df3, horas_paro)
+    df_opt = optimizar(df3, horas_paro)
 
     if not df_opt.empty:
 
         st.subheader("Asignación óptima")
         st.dataframe(df_opt)
 
-        st.success(f"Tecnicos requeridos: {df_opt['Tecnico'].nunique()}")
-
-        df_crono=cronograma(df_opt, inicio_paro, horas_paro)
-
-        st.subheader("Cronograma")
+        df_crono = cronograma(df_opt, inicio_paro, horas_paro)
 
         # -------------------------------
-        # FILTRO POR CENTRO
+        # FILTRO (NO RECALCULA)
         # -------------------------------
         centros = sorted(df_crono["Centro"].dropna().unique())
-        centro_sel = st.selectbox("Filtrar por Centro", ["Todos"] + centros)
+
+        centro_sel = st.selectbox(
+            "Filtrar por Centro",
+            ["Todos"] + centros,
+            key="centro_filtro"
+        )
 
         if centro_sel != "Todos":
-            df_crono_filtrado = df_crono[df_crono["Centro"] == centro_sel]
+            df_view = df_crono[df_crono["Centro"] == centro_sel]
         else:
-            df_crono_filtrado = df_crono.copy()
+            df_view = df_crono
 
-        st.dataframe(df_crono_filtrado)
+        st.subheader("Cronograma")
+        st.dataframe(df_view)
 
-        if df_crono_filtrado.empty:
+        if not df_view.empty:
+            gantt(df_view, inicio_paro, horas_paro)
+        else:
             st.warning("Sin datos para el centro seleccionado")
-        else:
-            gantt(df_crono_filtrado, inicio_paro, horas_paro)
 
     else:
         st.error("Sin solución")
