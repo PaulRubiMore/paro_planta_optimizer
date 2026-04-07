@@ -135,9 +135,6 @@ def fragmentar(df):
 
     return pd.DataFrame(out)
 
-# ---------------------------------------------------------
-# OPTIMIZADOR
-# ---------------------------------------------------------
 
 @st.cache_data
 def optimizar(df, horas_paro):
@@ -148,7 +145,7 @@ def optimizar(df, horas_paro):
     cap = dias * 8
 
     # -----------------------------
-    # GRUPO (clave de continuidad)
+    # GRUPO (continuidad lógica)
     # -----------------------------
     df["grupo"] = (
         df["orden"].astype(str) + "_" +
@@ -183,16 +180,18 @@ def optimizar(df, horas_paro):
             asignacion[(i,t)] = model.NewBoolVar(f"a_{i}_{t}")
 
     # -----------------------------
-    # 1. Cada bloque usa 1 técnico
+    # 1. Cada bloque → 1 técnico
     # -----------------------------
     for i in range(n):
         c = df.iloc[i]["centro"]
         e = df.iloc[i]["especialidad"]
 
-        model.Add(sum(asignacion[(i,t)] for t in tecnicos[(c,e)]) == 1)
+        model.Add(
+            sum(asignacion[(i,t)] for t in tecnicos[(c,e)]) == 1
+        )
 
     # -----------------------------
-    # 2. CAPACIDAD técnico
+    # 2. Capacidad técnico
     # -----------------------------
     for (c,e), lista in tecnicos.items():
         for t in lista:
@@ -201,16 +200,17 @@ def optimizar(df, horas_paro):
 
             if tareas:
                 model.Add(
-                    sum(asignacion[(i,t)] * int(df.iloc[i]["duracion"]) for (i,t) in tareas)
-                    <= cap
+                    sum(
+                        asignacion[(i,t)] * int(df.iloc[i]["duracion"])
+                        for (i,t) in tareas
+                    ) <= cap
                 )
 
     # -----------------------------
-    # 3. CONTINUIDAD POR GRUPO 🔥
+    # 3. CONTINUIDAD SUAVE 🔥
     # -----------------------------
     grupos = df["grupo"].unique()
-
-    asignacion_grupo = {}
+    penalizacion_split = []
 
     for g in grupos:
 
@@ -219,21 +219,30 @@ def optimizar(df, horas_paro):
         c = df.loc[idxs[0], "centro"]
         e = df.loc[idxs[0], "especialidad"]
 
+        vars_g = []
+
         for t in tecnicos[(c,e)]:
-            asignacion_grupo[(g,t)] = model.NewBoolVar(f"g_{g}_{t}")
 
-        # Un solo técnico por grupo
-        model.Add(
-            sum(asignacion_grupo[(g,t)] for t in tecnicos[(c,e)]) == 1
-        )
+            v = model.NewBoolVar(f"g_{g}_{t}")
+            vars_g.append(v)
 
-        # Vincular bloques con técnico del grupo
-        for i in idxs:
-            for t in tecnicos[(c,e)]:
-                model.Add(asignacion[(i,t)] <= asignacion_grupo[(g,t)])
+            # Si técnico participa → al menos un bloque
+            model.Add(
+                sum(asignacion[(i,t)] for i in idxs) >= v
+            )
+
+            # Si bloque usa técnico → técnico pertenece al grupo
+            for i in idxs:
+                model.Add(asignacion[(i,t)] <= v)
+
+        # Penalizar usar más de 1 técnico
+        exceso = model.NewIntVar(0, len(vars_g), f"exceso_{g}")
+        model.Add(exceso == sum(vars_g) - 1)
+
+        penalizacion_split.append(exceso)
 
     # -----------------------------
-    # 4. Minimizar técnicos usados
+    # 4. Técnicos usados
     # -----------------------------
     usados = []
 
@@ -247,7 +256,13 @@ def optimizar(df, horas_paro):
                 model.AddMaxEquality(u, vars_t)
                 usados.append(u)
 
-    model.Minimize(sum(usados))
+    # -----------------------------
+    # OBJETIVO
+    # -----------------------------
+    model.Minimize(
+        sum(usados) * 100 +          # minimizar técnicos globales
+        sum(penalizacion_split) * 10 # evitar dividir actividades
+    )
 
     # -----------------------------
     # SOLVER
@@ -277,7 +292,6 @@ def optimizar(df, horas_paro):
                 })
 
     return pd.DataFrame(res)
-
 # ---------------------------------------------------------
 # CRONOGRAMA
 # ---------------------------------------------------------
