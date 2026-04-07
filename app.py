@@ -142,88 +142,138 @@ def fragmentar(df):
 @st.cache_data
 def optimizar(df, horas_paro):
 
-    model=cp_model.CpModel()
+    model = cp_model.CpModel()
 
-    dias=ceil(horas_paro/24)
-    cap=dias*8
+    dias = ceil(horas_paro / 24)
+    cap = dias * 8
 
-    df["grupo"]=df["orden"].astype(str)+"_"+df["actividad"].astype(str)
-    dur_total=df.groupby("grupo")["duracion"].sum()
+    # -----------------------------
+    # GRUPO (clave de continuidad)
+    # -----------------------------
+    df["grupo"] = (
+        df["orden"].astype(str) + "_" +
+        df["actividad"].astype(str) + "_" +
+        df["centro"].astype(str) + "_" +
+        df["especialidad"].astype(str)
+    )
 
-    combos=df[["centro","especialidad"]].drop_duplicates()
+    combos = df[["centro","especialidad"]].drop_duplicates()
 
-    tecnicos={}
+    tecnicos = {}
 
-    for _,r in combos.iterrows():
-        c,e=r["centro"],r["especialidad"]
+    for _, r in combos.iterrows():
+        c, e = r["centro"], r["especialidad"]
 
-        carga = df[(df["centro"]==c) & (df["especialidad"]==e)]["duracion"].sum()
+        carga = df[(df["centro"] == c) & (df["especialidad"] == e)]["duracion"].sum()
         max_tecnicos = ceil(carga / cap) + 2
 
         tecnicos[(c,e)] = [f"{c}_{e}_T{i}" for i in range(1, max_tecnicos+1)]
 
-    asignacion={}
-    n=len(df)
+    # -----------------------------
+    # VARIABLES
+    # -----------------------------
+    asignacion = {}
+    n = len(df)
 
     for i in range(n):
-        c=df.iloc[i]["centro"]
-        e=df.iloc[i]["especialidad"]
+        c = df.iloc[i]["centro"]
+        e = df.iloc[i]["especialidad"]
 
         for t in tecnicos[(c,e)]:
-            asignacion[(i,t)]=model.NewBoolVar(f"a_{i}_{t}")
+            asignacion[(i,t)] = model.NewBoolVar(f"a_{i}_{t}")
 
+    # -----------------------------
+    # 1. Cada bloque usa 1 técnico
+    # -----------------------------
     for i in range(n):
-        c=df.iloc[i]["centro"]
-        e=df.iloc[i]["especialidad"]
+        c = df.iloc[i]["centro"]
+        e = df.iloc[i]["especialidad"]
 
-        model.Add(sum(asignacion[(i,t)] for t in tecnicos[(c,e)])==1)
+        model.Add(sum(asignacion[(i,t)] for t in tecnicos[(c,e)]) == 1)
 
-    for (c,e),lista in tecnicos.items():
+    # -----------------------------
+    # 2. CAPACIDAD técnico
+    # -----------------------------
+    for (c,e), lista in tecnicos.items():
         for t in lista:
 
-            tareas=[(i,t) for i in range(n) if (i,t) in asignacion]
+            tareas = [(i,t) for i in range(n) if (i,t) in asignacion]
 
             if tareas:
                 model.Add(
-                    sum(asignacion[(i,t)]*int(df.iloc[i]["duracion"]) for (i,t) in tareas) <= cap
+                    sum(asignacion[(i,t)] * int(df.iloc[i]["duracion"]) for (i,t) in tareas)
+                    <= cap
                 )
 
-    usados=[]
+    # -----------------------------
+    # 3. CONTINUIDAD POR GRUPO 🔥
+    # -----------------------------
+    grupos = df["grupo"].unique()
 
-    for (c,e),lista in tecnicos.items():
+    asignacion_grupo = {}
+
+    for g in grupos:
+
+        idxs = df[df["grupo"] == g].index.tolist()
+
+        c = df.loc[idxs[0], "centro"]
+        e = df.loc[idxs[0], "especialidad"]
+
+        for t in tecnicos[(c,e)]:
+            asignacion_grupo[(g,t)] = model.NewBoolVar(f"g_{g}_{t}")
+
+        # Un solo técnico por grupo
+        model.Add(
+            sum(asignacion_grupo[(g,t)] for t in tecnicos[(c,e)]) == 1
+        )
+
+        # Vincular bloques con técnico del grupo
+        for i in idxs:
+            for t in tecnicos[(c,e)]:
+                model.Add(asignacion[(i,t)] <= asignacion_grupo[(g,t)])
+
+    # -----------------------------
+    # 4. Minimizar técnicos usados
+    # -----------------------------
+    usados = []
+
+    for (c,e), lista in tecnicos.items():
         for t in lista:
 
-            vars_t=[asignacion[(i,t)] for i in range(n) if (i,t) in asignacion]
+            vars_t = [asignacion[(i,t)] for i in range(n) if (i,t) in asignacion]
 
             if vars_t:
-                u=model.NewBoolVar(f"u_{t}")
-                model.AddMaxEquality(u,vars_t)
+                u = model.NewBoolVar(f"u_{t}")
+                model.AddMaxEquality(u, vars_t)
                 usados.append(u)
 
     model.Minimize(sum(usados))
 
-    solver=cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds=60
+    # -----------------------------
+    # SOLVER
+    # -----------------------------
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 60
 
-    status=solver.Solve(model)
+    status = solver.Solve(model)
 
-    res=[]
+    res = []
 
     if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
 
-        for (i,t),v in asignacion.items():
-            if solver.Value(v)==1:
+        for (i,t), v in asignacion.items():
+            if solver.Value(v) == 1:
 
-                r=df.iloc[i]
+                r = df.iloc[i]
 
                 res.append({
-                    "Tecnico":t,
-                    "Centro":r["centro"],
-                    "Especialidad":r["especialidad"],
-                    "Orden":r["orden"],
-                    "Actividad":r["actividad"],
-                    "Bloque":r["bloque"],
-                    "Duracion":r["duracion"]
+                    "Tecnico": t,
+                    "Centro": r["centro"],
+                    "Especialidad": r["especialidad"],
+                    "Orden": r["orden"],
+                    "Actividad": r["actividad"],
+                    "Bloque": r["bloque"],
+                    "Duracion": r["duracion"]
                 })
 
     return pd.DataFrame(res)
